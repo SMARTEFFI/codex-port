@@ -8,6 +8,7 @@ struct WorkspaceListView: View {
     let dayThreadGroups: [WorkspaceDayThreadGroup]
     let recentThreads: [ThreadSummary]
     let onOpenSession: (ThreadSummary) -> Void
+    let onStartProjectSession: (WorkspaceProject) -> Void
     let onBrowseWorkspace: () -> Void
     @State private var expandedProjectIDs: Set<String> = []
     @State private var expandedDayGroupIDs: Set<String> = []
@@ -26,6 +27,7 @@ struct WorkspaceListView: View {
         dayThreadGroups: [WorkspaceDayThreadGroup] = [],
         recentThreads: [ThreadSummary],
         onOpenSession: @escaping (ThreadSummary) -> Void,
+        onStartProjectSession: @escaping (WorkspaceProject) -> Void,
         onBrowseWorkspace: @escaping () -> Void
     ) {
         self._grouping = grouping
@@ -34,6 +36,7 @@ struct WorkspaceListView: View {
         self.dayThreadGroups = dayThreadGroups
         self.recentThreads = recentThreads
         self.onOpenSession = onOpenSession
+        self.onStartProjectSession = onStartProjectSession
         self.onBrowseWorkspace = onBrowseWorkspace
     }
 
@@ -76,6 +79,9 @@ struct WorkspaceListView: View {
                                 isCollapsed: isCollapsed(group),
                                 onToggleCollapse: {
                                     toggleProjectCollapse(group.id)
+                                },
+                                onStartSession: {
+                                    onStartProjectSession(group.project)
                                 }
                             )
                         }
@@ -328,6 +334,7 @@ private struct WorkspaceProjectHeader: View {
     let project: WorkspaceProject
     let isCollapsed: Bool
     let onToggleCollapse: () -> Void
+    let onStartSession: () -> Void
 
     var body: some View {
         WorkspaceGroupHeader(
@@ -341,7 +348,10 @@ private struct WorkspaceProjectHeader: View {
             activityIndicator: project.activityIndicator,
             isCollapsed: isCollapsed,
             accessibilityName: "\(projectName) 分组",
-            onToggleCollapse: onToggleCollapse
+            onToggleCollapse: onToggleCollapse,
+            trailingActionSystemImage: "square.and.pencil",
+            trailingActionAccessibilityLabel: "在 \(projectName) 新建会话",
+            onTrailingAction: onStartSession
         )
     }
 
@@ -366,50 +376,71 @@ private struct WorkspaceGroupHeader: View {
     let isCollapsed: Bool
     let accessibilityName: String
     let onToggleCollapse: () -> Void
+    var trailingActionSystemImage: String?
+    var trailingActionAccessibilityLabel: String?
+    var onTrailingAction: (() -> Void)?
 
     var body: some View {
-        Button(action: onToggleCollapse) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 10) {
-                    Image(systemName: iconName)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    Text(title)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
-                    Spacer()
-                    WorkspaceActivityIndicatorView(indicator: activityIndicator)
-                }
-                if !metadata.isEmpty {
-                    HStack(spacing: 8) {
-                        ForEach(metadata, id: \.self) { value in
-                            Text(value)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-                if let detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+        HStack(alignment: .top, spacing: 8) {
+            Button(action: onToggleCollapse) {
+                content
+                    .contentShape(Rectangle())
             }
-            .textCase(nil)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel(accessibilityName)
+            .accessibilityValue(isCollapsed ? "已折叠" : "已展开")
+            .accessibilityHint(isCollapsed ? "展开会话" : "折叠会话")
+
+            if let trailingActionSystemImage, let onTrailingAction {
+                Button(action: onTrailingAction) {
+                    Image(systemName: trailingActionSystemImage)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(trailingActionAccessibilityLabel ?? "新建会话")
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityName)
-        .accessibilityValue(isCollapsed ? "已折叠" : "已展开")
-        .accessibilityHint(isCollapsed ? "展开会话" : "折叠会话")
         .padding(.top, 12)
         .padding(.bottom, 8)
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: iconName)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                Spacer()
+                WorkspaceActivityIndicatorView(indicator: activityIndicator)
+            }
+            if !metadata.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(metadata, id: \.self) { value in
+                        Text(value)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            if let detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .textCase(nil)
     }
 }
 
@@ -524,6 +555,7 @@ private struct WorkspaceListPreview: View {
                     )
                 ],
                 onOpenSession: { _ in },
+                onStartProjectSession: { _ in },
                 onBrowseWorkspace: {}
             )
         }

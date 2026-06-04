@@ -110,13 +110,20 @@ struct SessionDetailView: View {
 
             CodexInputBarView(
                 composer: $composer,
+                pendingAttachments: pendingAttachments,
                 onSend: sendPreviewMessage,
                 onStop: stopRunningTurn,
+                onAttachPhoto: {
+                    isPhotoPickerPresented = true
+                },
                 onAttachCamera: {
                     isCameraPresented = true
                 },
                 onAttachFile: {
                     isFileImporterPresented = true
+                },
+                onRemoveAttachment: { index in
+                    removePendingAttachment(at: index)
                 }
             )
         }
@@ -164,25 +171,23 @@ struct SessionDetailView: View {
         .sheet(isPresented: $isCameraPresented) {
             CameraCaptureView { image in
                 if let pending = pickedAttachmentHandler.cameraImage(image) {
-                    pendingAttachments.append(pending)
-                    composer.attachments.append(.localImage(path: pending.name, detail: "high"))
+                    appendPendingAttachment(pending)
                 }
             }
         }
         .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.item]) { result in
             if case let .success(url) = result, let pending = try? pickedAttachmentHandler.file(url: url) {
-                pendingAttachments.append(pending)
-                composer.attachments.append(.remoteFile(path: pending.name))
+                appendPendingAttachment(pending)
             }
         }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self) {
-                    let pending = PendingAttachment(name: "photo.jpg", kind: .image(detail: "high"), data: data)
-                    pendingAttachments.append(pending)
-                    composer.attachments.append(.localImage(path: pending.name, detail: "high"))
+                    let pending = PendingAttachment(name: nextPhotoName(), kind: .image(detail: "high"), data: data)
+                    appendPendingAttachment(pending)
                 }
+                selectedPhoto = nil
             }
         }
         .alert("会话失败", isPresented: Binding(
@@ -217,6 +222,7 @@ struct SessionDetailView: View {
                     updateTimeline(sessionStore.visibleItems, source: .liveUpdate)
                     composer.text = ""
                     composer.attachments.removeAll()
+                    pendingAttachments.removeAll()
                     composer.isRunning = sessionStore.status == .running
                 } catch {
                     errorMessage = sessionErrorMessage(for: error)
@@ -227,8 +233,38 @@ struct SessionDetailView: View {
             previewItems.append(.assistantMessage(composer.text))
             updateTimeline(previewItems, source: .liveUpdate)
             composer.text = ""
+            composer.attachments.removeAll()
+            pendingAttachments.removeAll()
             composer.isRunning = true
         }
+    }
+
+    private func appendPendingAttachment(_ pending: PendingAttachment) {
+        pendingAttachments.append(pending)
+        switch pending.kind {
+        case let .image(detail):
+            composer.attachments.append(.localImage(path: pending.name, detail: detail))
+        case .file:
+            composer.attachments.append(.remoteFile(path: pending.name))
+        }
+    }
+
+    private func removePendingAttachment(at index: Int) {
+        guard pendingAttachments.indices.contains(index) else { return }
+        pendingAttachments.remove(at: index)
+        if composer.attachments.indices.contains(index) {
+            composer.attachments.remove(at: index)
+        }
+    }
+
+    private func nextPhotoName() -> String {
+        let nextIndex = pendingAttachments.filter { attachment in
+            if case .image = attachment.kind {
+                return true
+            }
+            return false
+        }.count + 1
+        return "photo-\(nextIndex).jpg"
     }
 
     private func stopRunningTurn() {

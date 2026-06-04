@@ -124,6 +124,13 @@ struct RootView: View {
                             connection.markThreadRead(thread.id)
                             path.append(AppRoute.session(thread.id))
                         },
+                        onStartProjectSession: { project in
+                            Task {
+                                if let threadID = await connection.startThread(cwd: project.cwd) {
+                                    path.append(AppRoute.session(threadID))
+                                }
+                            }
+                        },
                         onBrowseWorkspace: {
                             path.append(AppRoute.remoteBrowser)
                         }

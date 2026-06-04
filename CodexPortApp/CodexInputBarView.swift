@@ -1,18 +1,29 @@
 import CodexPortCore
 import SwiftUI
+import UIKit
 
 struct CodexInputBarView: View {
     @Binding var composer: InputComposer
+    let pendingAttachments: [PendingAttachment]
     let onSend: () -> Void
     let onStop: () -> Void
+    let onAttachPhoto: () -> Void
     let onAttachCamera: () -> Void
     let onAttachFile: () -> Void
+    let onRemoveAttachment: (Int) -> Void
     @State private var pendingPermissionMode: PermissionMode?
     @State private var fullAccessConfirmationPresented = false
     @State private var unavailableReason: String?
 
     var body: some View {
         VStack(spacing: 10) {
+            if !pendingAttachments.isEmpty {
+                AttachmentPreviewStrip(
+                    attachments: pendingAttachments,
+                    onRemove: onRemoveAttachment
+                )
+            }
+
             TextField("向 Codex 提问", text: $composer.text, axis: .vertical)
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
@@ -30,6 +41,9 @@ struct CodexInputBarView: View {
                     }
                     Button(action: onAttachCamera) {
                         Label("相机", systemImage: "camera")
+                    }
+                    Button(action: onAttachPhoto) {
+                        Label("照片", systemImage: "photo.on.rectangle")
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -184,13 +198,94 @@ struct CodexInputBarView: View {
     }
 }
 
+private struct AttachmentPreviewStrip: View {
+    let attachments: [PendingAttachment]
+    let onRemove: (Int) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
+                    AttachmentPreviewChip(
+                        attachment: attachment,
+                        onRemove: {
+                            onRemove(index)
+                        }
+                    )
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct AttachmentPreviewChip: View {
+    let attachment: PendingAttachment
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            preview
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Text(attachment.name)
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 150, alignment: .leading)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("移除 \(attachment.name)")
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+        .background(Color(.secondarySystemFill))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        switch attachment.kind {
+        case .image:
+            if let image = UIImage(data: attachment.data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "photo")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.tertiarySystemFill))
+            }
+        case .file:
+            Image(systemName: "doc")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(.tertiarySystemFill))
+        }
+    }
+}
+
 #Preview {
     @Previewable @State var composer = InputComposer(modelDisplay: "5.5 超高")
     CodexInputBarView(
         composer: $composer,
+        pendingAttachments: [],
         onSend: {},
         onStop: {},
+        onAttachPhoto: {},
         onAttachCamera: {},
-        onAttachFile: {}
+        onAttachFile: {},
+        onRemoveAttachment: { _ in }
     )
 }
