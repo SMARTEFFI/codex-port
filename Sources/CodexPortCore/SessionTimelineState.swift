@@ -27,6 +27,13 @@ public struct SessionTimelineState: Equatable, Sendable {
         return isPinnedToBottom ? .bottom : .preserve
     }
 
+    @discardableResult
+    public mutating func prependHistoryItems(_ items: [VisibleItem]) -> SessionScrollAnchor {
+        self.items = items
+        isPinnedToBottom = false
+        return .preserve
+    }
+
     public mutating func userMovedAwayFromBottom() {
         isPinnedToBottom = false
     }

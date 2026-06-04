@@ -3,6 +3,7 @@ import Foundation
 public enum JSONRPCError: Error, Equatable {
     case remote(code: Int, message: String)
     case connectionClosed
+    case requestTimedOut(method: String, seconds: Double)
 }
 
 public struct JSONRPCOutboundRequest: Equatable, Sendable {
@@ -76,7 +77,7 @@ public actor JSONRPCClient {
         self.transport = transport
     }
 
-    public func request(method: String, params: JSONValue) async throws -> JSONValue {
+    public func request(method: String, params: JSONValue, timeoutSeconds: Double? = nil) async throws -> JSONValue {
         let id = JSONRPCID.number(nextID)
         nextID += 1
         pending.insert(id)
@@ -89,8 +90,14 @@ public actor JSONRPCClient {
         }
 
         startPumpIfNeeded()
-        await waitUntil { self.completed[id] != nil }
+        let didComplete = await waitUntil(timeoutSeconds: timeoutSeconds) {
+            self.completed[id] != nil
+        }
         pending.remove(id)
+        if !didComplete, let timeoutSeconds {
+            completed.removeValue(forKey: id)
+            throw JSONRPCError.requestTimedOut(method: method, seconds: timeoutSeconds)
+        }
         guard let result = completed.removeValue(forKey: id) else {
             throw JSONRPCError.connectionClosed
         }
@@ -112,14 +119,14 @@ public actor JSONRPCClient {
 
     public func nextNotification() async -> JSONRPCNotification? {
         startPumpIfNeeded()
-        await waitUntil { !self.notifications.isEmpty }
+        _ = await waitUntil { !self.notifications.isEmpty }
         guard !Task.isCancelled else { return nil }
         return notifications.isEmpty ? nil : notifications.removeFirst()
     }
 
     public func nextServerRequest() async -> JSONRPCServerRequest? {
         startPumpIfNeeded()
-        await waitUntil { !self.serverRequests.isEmpty }
+        _ = await waitUntil { !self.serverRequests.isEmpty }
         guard !Task.isCancelled else { return nil }
         return serverRequests.isEmpty ? nil : serverRequests.removeFirst()
     }
@@ -168,14 +175,22 @@ public actor JSONRPCClient {
         }
     }
 
-    private func waitUntil(_ predicate: @escaping () -> Bool) async {
+    private func waitUntil(
+        timeoutSeconds: Double? = nil,
+        _ predicate: @escaping () -> Bool
+    ) async -> Bool {
+        let deadline = timeoutSeconds.map { Date().addingTimeInterval($0) }
         while !predicate(), !Task.isCancelled {
+            if let deadline, Date() >= deadline {
+                return false
+            }
             do {
                 try await Task.sleep(for: .milliseconds(5))
             } catch {
-                return
+                return false
             }
         }
+        return predicate()
     }
 }
 

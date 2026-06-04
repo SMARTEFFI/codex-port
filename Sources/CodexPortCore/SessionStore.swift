@@ -46,28 +46,107 @@ public enum SessionEvent: Equatable, Sendable {
 }
 
 public final class SessionStore {
+    public static let defaultInitialVisibleItemLimit = 120
+    public static let defaultInitialTurnPageSize = 10
+    public static let defaultHistoryTurnPageSize = 10
+    public static let defaultLegacyHistoryItemPageSize = 80
+    public static let defaultHistoryRequestTimeoutSeconds: Double = 30
+
     private let protocolClient: CodexProtocolClient
+    private let initialVisibleItemLimit: Int
+    private let initialTurnPageSize: Int
+    private let historyTurnPageSize: Int
+    private let legacyHistoryItemPageSize: Int
+    private let historyRequestTimeoutSeconds: Double
     public private(set) var thread: ThreadDetail?
+    public private(set) var loadedTurnCount = 0
     public private(set) var runningTurnID: String?
     public private(set) var runningThreadID: String?
     public private(set) var status: TurnStatus?
     public private(set) var visibleItems: [VisibleItem] = []
+    public private(set) var isTotalHistoryCountKnown = false
     private var itemIndexByID: [String: Int] = [:]
+    private var allHistoryItems: [VisibleItem] = []
+    private var visibleHistoryStartIndex = 0
+    private var earlierTurnsCursor: String?
+    private var usesServerPagedHistory = false
 
-    public init(protocolClient: CodexProtocolClient) {
+    public init(
+        protocolClient: CodexProtocolClient,
+        initialVisibleItemLimit: Int = SessionStore.defaultInitialVisibleItemLimit,
+        initialTurnPageSize: Int = SessionStore.defaultInitialTurnPageSize,
+        historyTurnPageSize: Int = SessionStore.defaultHistoryTurnPageSize,
+        legacyHistoryItemPageSize: Int = SessionStore.defaultLegacyHistoryItemPageSize,
+        historyRequestTimeoutSeconds: Double = SessionStore.defaultHistoryRequestTimeoutSeconds
+    ) {
         self.protocolClient = protocolClient
+        self.initialVisibleItemLimit = max(1, initialVisibleItemLimit)
+        self.initialTurnPageSize = max(1, initialTurnPageSize)
+        self.historyTurnPageSize = max(1, historyTurnPageSize)
+        self.legacyHistoryItemPageSize = max(1, legacyHistoryItemPageSize)
+        self.historyRequestTimeoutSeconds = max(0.05, historyRequestTimeoutSeconds)
+    }
+
+    public var hasEarlierHistory: Bool {
+        visibleHistoryStartIndex > 0 || earlierTurnsCursor != nil
+    }
+
+    public var totalHistoryItemCount: Int {
+        allHistoryItems.count
+    }
+
+    public var loadedHistoryItemCount: Int {
+        allHistoryItems.count - visibleHistoryStartIndex
     }
 
     public func open(threadID: String) async throws {
-        let response = try await protocolClient.resumeThread(id: threadID)
+        let response: JSONValue
+        do {
+            response = try await protocolClient.resumeThread(
+                id: threadID,
+                initialTurnLimit: initialTurnPageSize,
+                timeoutSeconds: historyRequestTimeoutSeconds
+            )
+        } catch JSONRPCError.remote {
+            response = try await protocolClient.resumeThread(id: threadID)
+        }
         if let fake = protocolClient as? ThreadDetailProviding {
             thread = fake.thread
         } else {
             thread = ThreadDetail(json: response, fallbackID: threadID)
         }
-        visibleItems = thread?.turns.flatMap(\.items) ?? []
         itemIndexByID.removeAll()
+
+        if let page = ThreadTurnsPage(json: response.object?["initialTurnsPage"]?.object, fallbackThreadID: threadID) {
+            applyInitialPagedTurns(page)
+        } else {
+            applyLegacyFullHistoryWindow()
+        }
+
         restoreRunningState(threadID: threadID)
+    }
+
+    public func loadEarlierHistory() async throws {
+        guard hasEarlierHistory else { return }
+        if usesServerPagedHistory, let earlierTurnsCursor {
+            let response = try await protocolClient.listThreadTurns(
+                threadID: thread?.id ?? runningThreadID ?? "",
+                cursor: earlierTurnsCursor,
+                limit: historyTurnPageSize,
+                sortDirection: "desc",
+                itemsView: "full",
+                timeoutSeconds: historyRequestTimeoutSeconds
+            )
+            guard let page = ThreadTurnsPage(json: response.object, fallbackThreadID: thread?.id ?? runningThreadID ?? "") else { return }
+            prependPagedTurns(page)
+            return
+        }
+
+        let previousStartIndex = visibleHistoryStartIndex
+        visibleHistoryStartIndex = max(0, visibleHistoryStartIndex - legacyHistoryItemPageSize)
+        let addedVisibleCount = previousStartIndex - visibleHistoryStartIndex
+        visibleItems = Array(allHistoryItems[visibleHistoryStartIndex...])
+        itemIndexByID = itemIndexByID.mapValues { $0 + addedVisibleCount }
     }
 
     public func send(prompt: String) async throws {
@@ -101,6 +180,7 @@ public final class SessionStore {
         runningThreadID = threadID
         status = .running
         if !composer.text.isEmpty {
+            allHistoryItems.append(.userMessage(composer.text))
             visibleItems.append(.userMessage(composer.text))
         }
     }
@@ -134,6 +214,7 @@ public final class SessionStore {
         case let .itemCompleted(_, itemID, item):
             if let index = itemIndexByID[itemID] {
                 visibleItems[index] = item
+                updateHistoryItem(atVisibleIndex: index, with: item)
                 return
             }
             if isDuplicateOptimisticUserMessage(item) {
@@ -141,6 +222,7 @@ public final class SessionStore {
                 return
             }
             itemIndexByID[itemID] = visibleItems.count
+            allHistoryItems.append(item)
             visibleItems.append(item)
         case let .agentMessageDelta(_, itemID, delta):
             append(delta: delta, itemID: itemID, make: VisibleItem.assistantMessage, merge: mergeAssistant)
@@ -149,8 +231,10 @@ public final class SessionStore {
         case let .fileChangeDelta(_, itemID, path, diff):
             if let index = itemIndexByID[itemID] {
                 visibleItems[index] = .fileChange(path: path, diff: diff)
+                updateHistoryItem(atVisibleIndex: index, with: .fileChange(path: path, diff: diff))
             } else {
                 itemIndexByID[itemID] = visibleItems.count
+                allHistoryItems.append(.fileChange(path: path, diff: diff))
                 visibleItems.append(.fileChange(path: path, diff: diff))
             }
         case .turnCompleted:
@@ -183,6 +267,45 @@ public final class SessionStore {
             runningTurnID = nil
             status = nil
         }
+    }
+
+    private func applyInitialPagedTurns(_ page: ThreadTurnsPage) {
+        usesServerPagedHistory = true
+        isTotalHistoryCountKnown = false
+        earlierTurnsCursor = page.nextCursor
+        let displayTurns = Array(page.turns.reversed())
+        loadedTurnCount = displayTurns.count
+        var thread = thread ?? ThreadDetail(id: page.threadID, turns: [])
+        thread.turns = displayTurns
+        self.thread = thread
+        allHistoryItems = displayTurns.flatMap(\.items)
+        visibleHistoryStartIndex = 0
+        visibleItems = allHistoryItems
+    }
+
+    private func applyLegacyFullHistoryWindow() {
+        usesServerPagedHistory = false
+        isTotalHistoryCountKnown = true
+        earlierTurnsCursor = nil
+        loadedTurnCount = thread?.turns.count ?? 0
+        allHistoryItems = thread?.turns.flatMap(\.items) ?? []
+        visibleHistoryStartIndex = max(0, allHistoryItems.count - initialVisibleItemLimit)
+        visibleItems = Array(allHistoryItems[visibleHistoryStartIndex...])
+    }
+
+    private func prependPagedTurns(_ page: ThreadTurnsPage) {
+        let earlierTurns = Array(page.turns.reversed())
+        guard !earlierTurns.isEmpty else {
+            earlierTurnsCursor = page.nextCursor
+            return
+        }
+        earlierTurnsCursor = page.nextCursor
+        loadedTurnCount += earlierTurns.count
+        let earlierItems = earlierTurns.flatMap(\.items)
+        thread?.turns.insert(contentsOf: earlierTurns, at: 0)
+        allHistoryItems.insert(contentsOf: earlierItems, at: 0)
+        visibleItems.insert(contentsOf: earlierItems, at: 0)
+        itemIndexByID = itemIndexByID.mapValues { $0 + earlierItems.count }
     }
 
     private func mergeTurnItems(from notification: JSONRPCNotification) {
@@ -220,10 +343,19 @@ public final class SessionStore {
     private func append(delta: String, itemID: String, make: (String) -> VisibleItem, merge: (VisibleItem, String) -> VisibleItem) {
         if let index = itemIndexByID[itemID] {
             visibleItems[index] = merge(visibleItems[index], delta)
+            updateHistoryItem(atVisibleIndex: index, with: visibleItems[index])
         } else {
+            let item = make(delta)
             itemIndexByID[itemID] = visibleItems.count
-            visibleItems.append(make(delta))
+            allHistoryItems.append(item)
+            visibleItems.append(item)
         }
+    }
+
+    private func updateHistoryItem(atVisibleIndex visibleIndex: Int, with item: VisibleItem) {
+        let historyIndex = visibleHistoryStartIndex + visibleIndex
+        guard allHistoryItems.indices.contains(historyIndex) else { return }
+        allHistoryItems[historyIndex] = item
     }
 
     private func mergeAssistant(_ item: VisibleItem, _ delta: String) -> VisibleItem {
@@ -381,4 +513,17 @@ extension SessionEvent {
 
 public protocol ThreadDetailProviding: AnyObject {
     var thread: ThreadDetail? { get }
+}
+
+private struct ThreadTurnsPage {
+    var threadID: String
+    var turns: [Turn]
+    var nextCursor: String?
+
+    init?(json: [String: JSONValue]?, fallbackThreadID: String) {
+        guard let json else { return nil }
+        self.threadID = fallbackThreadID
+        self.turns = (json["data"]?.array ?? []).compactMap(Turn.init(json:))
+        self.nextCursor = json["nextCursor"]?.string
+    }
 }

@@ -1,7 +1,13 @@
 import Foundation
 
 public protocol CodexTransport: AnyObject, Sendable {
-    func request(method: String, params: JSONValue) async throws -> JSONValue
+    func request(method: String, params: JSONValue, timeoutSeconds: Double?) async throws -> JSONValue
+}
+
+public extension CodexTransport {
+    func request(method: String, params: JSONValue) async throws -> JSONValue {
+        try await request(method: method, params: params, timeoutSeconds: nil)
+    }
 }
 
 public enum TurnAttachment: Equatable, Sendable {
@@ -56,7 +62,7 @@ public final class CodexProtocolFacade: CodexProtocolClient {
     }
 
     @discardableResult
-    public func initialize(clientName: String, suppressNotifications: [String]) async throws -> JSONValue {
+    public func initialize(clientName: String, suppressNotifications: [String], timeoutSeconds: Double? = nil) async throws -> JSONValue {
         try await transport.request(
             method: "initialize",
             params: .object([
@@ -70,7 +76,8 @@ public final class CodexProtocolFacade: CodexProtocolClient {
                     "requestAttestation": .bool(false),
                     "optOutNotificationMethods": .array(suppressNotifications.map(JSONValue.string))
                 ])
-            ])
+            ]),
+            timeoutSeconds: timeoutSeconds
         )
     }
 
@@ -87,6 +94,63 @@ public final class CodexProtocolFacade: CodexProtocolClient {
     @discardableResult
     public func resumeThread(id: String) async throws -> JSONValue {
         try await transport.request(method: "thread/resume", params: .object(["threadId": .string(id)]))
+    }
+
+    @discardableResult
+    public func resumeThread(id: String, initialTurnLimit: Int) async throws -> JSONValue {
+        try await resumeThread(id: id, initialTurnLimit: initialTurnLimit, timeoutSeconds: nil)
+    }
+
+    @discardableResult
+    public func resumeThread(id: String, initialTurnLimit: Int, timeoutSeconds: Double?) async throws -> JSONValue {
+        try await transport.request(method: "thread/resume", params: .object([
+            "threadId": .string(id),
+            "excludeTurns": .bool(true),
+            "initialTurnsPage": .object([
+                "limit": .number(Double(max(1, initialTurnLimit))),
+                "sortDirection": .string("desc"),
+                "itemsView": .string("full")
+            ])
+        ]), timeoutSeconds: timeoutSeconds)
+    }
+
+    @discardableResult
+    public func listThreadTurns(
+        threadID: String,
+        cursor: String?,
+        limit: Int,
+        sortDirection: String,
+        itemsView: String
+    ) async throws -> JSONValue {
+        try await listThreadTurns(
+            threadID: threadID,
+            cursor: cursor,
+            limit: limit,
+            sortDirection: sortDirection,
+            itemsView: itemsView,
+            timeoutSeconds: nil
+        )
+    }
+
+    @discardableResult
+    public func listThreadTurns(
+        threadID: String,
+        cursor: String?,
+        limit: Int,
+        sortDirection: String,
+        itemsView: String,
+        timeoutSeconds: Double?
+    ) async throws -> JSONValue {
+        var params: [String: JSONValue] = [
+            "threadId": .string(threadID),
+            "limit": .number(Double(max(1, limit))),
+            "sortDirection": .string(sortDirection),
+            "itemsView": .string(itemsView)
+        ]
+        if let cursor {
+            params["cursor"] = .string(cursor)
+        }
+        return try await transport.request(method: "thread/turns/list", params: .object(params), timeoutSeconds: timeoutSeconds)
     }
 
     @discardableResult

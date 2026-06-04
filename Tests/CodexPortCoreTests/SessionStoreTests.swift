@@ -14,7 +14,7 @@ import Testing
 
     #expect(store.thread?.turns.first?.items == [.assistantMessage("之前的回复")])
     #expect(protocolClient.calls == [
-        "thread/resume",
+        "thread/resume(initialTurnLimit:10,timeout:30.0)",
         "turn/start"
     ])
     #expect(store.runningTurnID == "turn-started")
@@ -126,6 +126,148 @@ import Testing
     ])
 }
 
+@Test func sessionStoreOpensThreadWithServerPagedRecentHistoryAndLoadsEarlierTurnsOnDemand() async throws {
+    let protocolClient = FakeCodexProtocol()
+    protocolClient.resumeThreadResponse = .object([
+        "thread": .object([
+            "id": .string("thread-1"),
+            "turns": .array([])
+        ]),
+        "initialTurnsPage": .object([
+            "data": .array([
+                turnJSON(index: 7),
+                turnJSON(index: 6),
+                turnJSON(index: 5)
+            ]),
+            "nextCursor": .string("older-turns")
+        ])
+    ])
+    protocolClient.pagedTurnResponses = [
+        .object([
+            "data": .array([
+                turnJSON(index: 4),
+                turnJSON(index: 3)
+            ]),
+            "nextCursor": .null
+        ])
+    ]
+    let store = SessionStore(protocolClient: protocolClient, initialVisibleItemLimit: 3, initialTurnPageSize: 3, historyTurnPageSize: 2)
+
+    try await store.open(threadID: "thread-1")
+
+    #expect(protocolClient.calls == ["thread/resume(initialTurnLimit:3,timeout:30.0)"])
+    #expect(store.loadedTurnCount == 3)
+    #expect(store.totalHistoryItemCount == 6)
+    #expect(store.loadedHistoryItemCount == 6)
+    #expect(store.hasEarlierHistory == true)
+    #expect(store.visibleItems == [
+        .userMessage("user 5"),
+        .assistantMessage("assistant 5"),
+        .userMessage("user 6"),
+        .assistantMessage("assistant 6"),
+        .userMessage("user 7"),
+        .assistantMessage("assistant 7")
+    ])
+
+    try await store.loadEarlierHistory()
+
+    #expect(protocolClient.calls == [
+        "thread/resume(initialTurnLimit:3,timeout:30.0)",
+        "thread/turns/list(cursor:older-turns,limit:2,sort:desc,items:full,timeout:30.0)"
+    ])
+    #expect(store.loadedTurnCount == 5)
+    #expect(store.hasEarlierHistory == false)
+    #expect(store.visibleItems == [
+        .userMessage("user 3"),
+        .assistantMessage("assistant 3"),
+        .userMessage("user 4"),
+        .assistantMessage("assistant 4"),
+        .userMessage("user 5"),
+        .assistantMessage("assistant 5"),
+        .userMessage("user 6"),
+        .assistantMessage("assistant 6"),
+        .userMessage("user 7"),
+        .assistantMessage("assistant 7")
+    ])
+}
+
+@Test func sessionStoreTimesOutWhenPagedRecentHistoryNeverReturns() async throws {
+    let transport = InMemoryJSONRPCTransport()
+    let client = JSONRPCClient(transport: transport)
+    let protocolClient = CodexProtocolFacade(transport: JSONRPCClientCodexTransport(client: client))
+    let store = SessionStore(
+        protocolClient: protocolClient,
+        initialVisibleItemLimit: 3,
+        historyRequestTimeoutSeconds: 0.05
+    )
+
+    let openTask = Task {
+        try await store.open(threadID: "thread-1")
+    }
+
+    let outbound = try await transport.nextOutbound()
+    #expect(outbound.method == "thread/resume")
+    #expect(outbound.params.object?["threadId"] == .string("thread-1"))
+    #expect(outbound.params.object?["excludeTurns"] == .bool(true))
+
+    await #expect(throws: JSONRPCError.requestTimedOut(method: "thread/resume", seconds: 0.05)) {
+        try await openTask.value
+    }
+    #expect(store.visibleItems.isEmpty)
+}
+
+@Test func sessionStoreFallsBackToClientWindowWhenServerRejectsPagedResume() async throws {
+    let protocolClient = LegacyResumeOnlyCodexProtocol()
+    protocolClient.thread = ThreadDetail(
+        id: "thread-1",
+        turns: (0..<8).map { index in
+            Turn(id: "turn-\(index)", status: .completed, items: [
+                .userMessage("user \(index)"),
+                .assistantMessage("assistant \(index)")
+            ])
+        }
+    )
+    let store = SessionStore(
+        protocolClient: protocolClient,
+        initialVisibleItemLimit: 5,
+        initialTurnPageSize: 5,
+        historyTurnPageSize: 4,
+        legacyHistoryItemPageSize: 4
+    )
+
+    try await store.open(threadID: "thread-1")
+
+    #expect(protocolClient.calls == [
+        "thread/resume(initialTurnLimit:5,timeout:30.0)",
+        "thread/resume"
+    ])
+    #expect(store.totalHistoryItemCount == 16)
+    #expect(store.loadedHistoryItemCount == 5)
+    #expect(store.hasEarlierHistory == true)
+    #expect(store.visibleItems == [
+        .assistantMessage("assistant 5"),
+        .userMessage("user 6"),
+        .assistantMessage("assistant 6"),
+        .userMessage("user 7"),
+        .assistantMessage("assistant 7")
+    ])
+
+    try await store.loadEarlierHistory()
+
+    #expect(store.loadedHistoryItemCount == 9)
+    #expect(store.visibleItems == [
+        .assistantMessage("assistant 3"),
+        .userMessage("user 4"),
+        .assistantMessage("assistant 4"),
+        .userMessage("user 5"),
+        .assistantMessage("assistant 5"),
+        .userMessage("user 6"),
+        .assistantMessage("assistant 6"),
+        .userMessage("user 7"),
+        .assistantMessage("assistant 7")
+    ])
+}
+
 @Test func sessionStoreSendsComposerAttachmentsPermissionAndPlanMode() async throws {
     let protocolClient = FakeCodexProtocol()
     protocolClient.thread = ThreadDetail(id: "thread-1", turns: [])
@@ -162,7 +304,7 @@ import Testing
     try await store.send(prompt: "手机补充上下文")
 
     #expect(protocolClient.calls == [
-        "thread/resume",
+        "thread/resume(initialTurnLimit:10,timeout:30.0)",
         "turn/steer"
     ])
     #expect(protocolClient.lastTurnSteer == TurnSteerRecord(
@@ -246,7 +388,7 @@ import Testing
     )
 
     #expect(protocolClient.calls == [
-        "thread/resume",
+        "thread/resume(initialTurnLimit:10,timeout:30.0)",
         "fs/createDirectory",
         "fs/writeFile",
         "fs/writeFile",
@@ -447,7 +589,30 @@ import Testing
     await store.close()
 
     #expect(protocolClient.calls == [
-        "thread/resume",
+        "thread/resume(initialTurnLimit:10,timeout:30.0)",
         "thread/unsubscribe"
+    ])
+}
+
+private func turnJSON(index: Int) -> JSONValue {
+    .object([
+        "id": .string("turn-\(index)"),
+        "status": .string("completed"),
+        "items": .array([
+            .object([
+                "type": .string("userMessage"),
+                "content": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string("user \(index)"),
+                        "text_elements": .array([])
+                    ])
+                ])
+            ]),
+            .object([
+                "type": .string("agentMessage"),
+                "text": .string("assistant \(index)")
+            ])
+        ])
     ])
 }

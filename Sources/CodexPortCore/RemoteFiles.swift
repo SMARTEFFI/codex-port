@@ -82,6 +82,10 @@ extension RemoteFileKind {
 public protocol CodexProtocolClient: AnyObject, Sendable {
     func readThread(id: String, includeTurns: Bool) async throws -> JSONValue
     func resumeThread(id: String) async throws -> JSONValue
+    func resumeThread(id: String, initialTurnLimit: Int) async throws -> JSONValue
+    func resumeThread(id: String, initialTurnLimit: Int, timeoutSeconds: Double?) async throws -> JSONValue
+    func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String) async throws -> JSONValue
+    func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String, timeoutSeconds: Double?) async throws -> JSONValue
     func startThread(cwd: String) async throws -> String
     func startTurn(threadID: String, prompt: String, attachments: [TurnAttachment], permissionMode: PermissionMode, collaborationMode: CollaborationMode) async throws -> JSONValue
     func steerTurn(threadID: String, turnID: String, prompt: String, attachments: [TurnAttachment]) async throws -> JSONValue
@@ -91,6 +95,34 @@ public protocol CodexProtocolClient: AnyObject, Sendable {
     func getMetadata(path: String) async throws -> RemoteMetadata
     func createDirectory(path: String, recursive: Bool) async throws
     func writeFile(path: String, dataBase64: String) async throws
+}
+
+public extension CodexProtocolClient {
+    func resumeThread(id: String, initialTurnLimit: Int) async throws -> JSONValue {
+        try await resumeThread(id: id)
+    }
+
+    func resumeThread(id: String, initialTurnLimit: Int, timeoutSeconds: Double?) async throws -> JSONValue {
+        try await resumeThread(id: id, initialTurnLimit: initialTurnLimit)
+    }
+
+    func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String) async throws -> JSONValue {
+        .object([
+            "data": .array([]),
+            "nextCursor": .null,
+            "backwardsCursor": .null
+        ])
+    }
+
+    func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String, timeoutSeconds: Double?) async throws -> JSONValue {
+        try await listThreadTurns(
+            threadID: threadID,
+            cursor: cursor,
+            limit: limit,
+            sortDirection: sortDirection,
+            itemsView: itemsView
+        )
+    }
 }
 
 public enum RemoteFileBrowserError: Error, Equatable {

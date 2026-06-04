@@ -71,13 +71,6 @@ struct AddHostProfileView: View {
                 TextField("defaultDirectory", text: $form.defaultDirectory)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                LabeledContent("启动命令") {
-                    Text(form.startupCommand)
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                        .textSelection(.enabled)
-                }
             }
 
             if let errorMessage {

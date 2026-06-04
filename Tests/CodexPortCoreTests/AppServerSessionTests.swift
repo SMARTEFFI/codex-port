@@ -207,3 +207,41 @@ import Testing
     }
     #expect(driver.lastConnection?.command == shell.appServerCommand)
 }
+
+@Test func appServerSessionTimesOutWhenInitializeResponseNeverArrives() async {
+    let stdout = AsyncBytesReader(chunks: [], isFinished: false)
+    let driver = FakeSSHDriver()
+    driver.stream = SSHByteStream(stdin: AsyncBytesWriter(), stdout: stdout)
+    let shell = AppServerShellCommand(codexPath: "codex")
+    driver.commandResults = [
+        shell.versionCommand: SSHCommandResult(stdout: Data("codex-cli 0.133.0\n".utf8), exitStatus: 0),
+        shell.appServerHelpCommand: SSHCommandResult(stdout: Data("Usage: codex app-server\n".utf8), exitStatus: 0),
+    ]
+    let profile = HostProfile(
+        id: UUID(),
+        name: "VPS",
+        host: "203.0.113.10",
+        port: 22,
+        username: "codex",
+        auth: .password(credentialID: "credential-1"),
+        codexPath: "codex",
+        startupCommand: AppServerStartupCommand(codexPath: "codex").shellCommand,
+        defaultDirectory: "~",
+        knownHostFingerprint: nil
+    )
+    let service = AppServerSessionConnector(
+        ssh: SSHConnectionService(driver: driver, knownHosts: KnownHostVerifier()),
+        codec: JSONRPCCodec(),
+        observer: AppServerConnectionObserver(),
+        initializeTimeoutSeconds: 0.05
+    )
+
+    await #expect(throws: JSONRPCError.requestTimedOut(method: "initialize", seconds: 0.05)) {
+        _ = try await service.connect(
+            profile: profile,
+            credential: .password("secret"),
+            unknownHostDecision: .confirmUnknownHost,
+            clientName: "Codex Port"
+        )
+    }
+}

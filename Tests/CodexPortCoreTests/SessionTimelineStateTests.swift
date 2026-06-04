@@ -47,3 +47,21 @@ import Testing
 
     #expect(pinnedAnchor == .bottom)
 }
+
+@Test func sessionTimelinePreservesPositionWhenEarlierHistoryIsPrepended() {
+    var timeline = SessionTimelineState(items: [
+        .assistantMessage("最新消息")
+    ])
+
+    let anchor = timeline.prependHistoryItems([
+        .assistantMessage("更早消息"),
+        .assistantMessage("最新消息")
+    ])
+
+    #expect(anchor == .preserve)
+    #expect(timeline.isPinnedToBottom == false)
+    #expect(timeline.items == [
+        .assistantMessage("更早消息"),
+        .assistantMessage("最新消息")
+    ])
+}

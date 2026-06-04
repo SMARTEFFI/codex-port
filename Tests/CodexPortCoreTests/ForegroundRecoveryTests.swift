@@ -11,6 +11,6 @@ import Testing
 
     try await recovery.recover(currentThreadID: "thread-1")
 
-    #expect(protocolClient.calls == ["thread/resume"])
+    #expect(protocolClient.calls == ["thread/resume(initialTurnLimit:10,timeout:30.0)"])
     #expect(recovery.lastRecoveryStatus == .completed)
 }

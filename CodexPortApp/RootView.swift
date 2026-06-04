@@ -126,9 +126,6 @@ struct RootView: View {
                         },
                         onBrowseWorkspace: {
                             path.append(AppRoute.remoteBrowser)
-                        },
-                        onGroupingChanged: {
-                            await connection.reloadWorkspaces()
                         }
                     )
                     .overlay {

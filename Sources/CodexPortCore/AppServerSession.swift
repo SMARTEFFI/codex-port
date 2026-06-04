@@ -37,15 +37,18 @@ public final class AppServerSessionConnector {
     private let ssh: SSHConnectionService
     private let codec: JSONRPCCodec
     private let observer: AppServerConnectionObserver
+    private let initializeTimeoutSeconds: Double
 
     public init(
         ssh: SSHConnectionService,
         codec: JSONRPCCodec = JSONRPCCodec(),
-        observer: AppServerConnectionObserver = AppServerConnectionObserver()
+        observer: AppServerConnectionObserver = AppServerConnectionObserver(),
+        initializeTimeoutSeconds: Double = 15
     ) {
         self.ssh = ssh
         self.codec = codec
         self.observer = observer
+        self.initializeTimeoutSeconds = initializeTimeoutSeconds
     }
 
     public func connect(
@@ -57,7 +60,7 @@ public final class AppServerSessionConnector {
         let shell = AppServerShellCommand(codexPath: profile.codexPath)
         await observer.log("获取并校验远端 Host Key。")
         try await runPreflight(profile: profile, credential: credential, unknownHostDecision: unknownHostDecision)
-        await observer.log("打开 app-server 共享 control socket bridge。")
+        await observer.log("打开独立 app-server stdio transport。")
         let connection = try await ssh.connect(
             profile: profile,
             credential: credential,
@@ -69,7 +72,11 @@ public final class AppServerSessionConnector {
         )
         let facade = CodexProtocolFacade(transport: JSONRPCCodexTransport(client: jsonRPC))
         await observer.log("发送 initialize 握手。")
-        _ = try await facade.initialize(clientName: clientName, suppressNotifications: [])
+        _ = try await facade.initialize(
+            clientName: clientName,
+            suppressNotifications: [],
+            timeoutSeconds: initializeTimeoutSeconds
+        )
         try await jsonRPC.sendNotification(method: "initialized")
         return AppServerSession(connection: connection, protocolClient: facade, events: jsonRPC)
     }
@@ -147,8 +154,8 @@ private final class JSONRPCCodexTransport: CodexTransport, @unchecked Sendable {
         self.client = client
     }
 
-    func request(method: String, params: JSONValue) async throws -> JSONValue {
-        try await client.request(method: method, params: params)
+    func request(method: String, params: JSONValue, timeoutSeconds: Double?) async throws -> JSONValue {
+        try await client.request(method: method, params: params, timeoutSeconds: timeoutSeconds)
     }
 }
 

@@ -10,6 +10,8 @@ import Testing
     _ = try await facade.listThreads(limit: 20)
     _ = try await facade.readThread(id: "thread-1", includeTurns: true)
     _ = try await facade.resumeThread(id: "thread-1")
+    _ = try await facade.resumeThread(id: "thread-1", initialTurnLimit: 12)
+    _ = try await facade.listThreadTurns(threadID: "thread-1", cursor: "older", limit: 10, sortDirection: "desc", itemsView: "full")
     _ = try await facade.startThread(cwd: "/repo")
     _ = try await facade.steerTurn(threadID: "thread-1", turnID: "turn-running", prompt: "补充", attachments: [])
     _ = try await facade.interruptTurn(threadID: "thread-1", turnID: "turn-1")
@@ -24,6 +26,8 @@ import Testing
         "thread/list",
         "thread/read",
         "thread/resume",
+        "thread/resume",
+        "thread/turns/list",
         "thread/start",
         "turn/steer",
         "turn/interrupt",
@@ -40,6 +44,20 @@ import Testing
     #expect(initializeParams["capabilities"]?.object?["experimentalApi"] == .bool(true))
     #expect(initializeParams["capabilities"]?.object?["requestAttestation"] == .bool(false))
     #expect(initializeParams["capabilities"]?.object?["optOutNotificationMethods"] == .array([.string("thread/started")]))
+
+    let pagedResumeParams = try #require(transport.requests[4].params.object)
+    #expect(pagedResumeParams["threadId"] == .string("thread-1"))
+    #expect(pagedResumeParams["excludeTurns"] == .bool(true))
+    #expect(pagedResumeParams["initialTurnsPage"]?.object?["limit"] == .number(12))
+    #expect(pagedResumeParams["initialTurnsPage"]?.object?["sortDirection"] == .string("desc"))
+    #expect(pagedResumeParams["initialTurnsPage"]?.object?["itemsView"] == .string("full"))
+
+    let turnsListParams = try #require(transport.requests[5].params.object)
+    #expect(turnsListParams["threadId"] == .string("thread-1"))
+    #expect(turnsListParams["cursor"] == .string("older"))
+    #expect(turnsListParams["limit"] == .number(10))
+    #expect(turnsListParams["sortDirection"] == .string("desc"))
+    #expect(turnsListParams["itemsView"] == .string("full"))
 }
 
 @Test func turnSteerCarriesExpectedTurnAndInputInOfficialShape() async throws {

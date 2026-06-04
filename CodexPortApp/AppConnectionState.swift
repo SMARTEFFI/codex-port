@@ -227,6 +227,9 @@ final class AppConnectionState: ObservableObject {
         if case let JSONRPCError.remote(_, message) = error {
             return "Codex 协议握手失败：\(message)"
         }
+        if case let JSONRPCError.requestTimedOut(method, seconds) = error {
+            return "Codex 协议请求 \(method) 超过 \(Int(seconds)) 秒未响应。请重试连接；如果持续发生，请检查远端 app-server 是否已卡住或版本不兼容。"
+        }
         if case let JSONRPCCodecError.invalidMessage(rawMessage) = error {
             return "Codex app-server 返回了非 JSON-RPC 消息：\(rawMessage)"
         }

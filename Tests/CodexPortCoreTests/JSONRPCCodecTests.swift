@@ -22,13 +22,16 @@ import Testing
     #expect(serverRequest == .request(id: .string("approval-1"), method: "item/fileChange/requestApproval", params: .object(["path": .string("README.md")])))
 }
 
-@Test func appServerStartupCommandPrefersSharedControlSocketBridgeThenFallsBackToStdio() {
+@Test func appServerStartupCommandUsesIndependentStdioTransport() {
     let command = AppServerStartupCommand(codexPath: "/opt/homebrew/bin/codex")
+    let expected = #"export PATH="$HOME/.codex/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; '/opt/homebrew/bin/codex' app-server --listen stdio://"#
 
-    #expect(command.shellCommand.contains(#"SOCKET="${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock""#))
-    #expect(command.shellCommand.contains(#"if [ -S "$SOCKET" ] && command -v node >/dev/null 2>&1; then node -e"#))
-    #expect(command.shellCommand.contains(#""$SOCKET"; STATUS=$?; [ "$STATUS" -eq 0 ] && exit 0; fi; exec /opt/homebrew/bin/codex app-server --listen stdio://"#))
-    #expect(!command.shellCommand.contains("daemon start"))
+    #expect(command.shellCommand == expected)
+    #expect(!command.shellCommand.contains("daemon"))
+    #expect(!command.shellCommand.contains("proxy"))
+    #expect(!command.shellCommand.contains("SOCKET"))
+    #expect(!command.shellCommand.contains("node -e"))
+    #expect(!command.shellCommand.contains("rm -rf"))
     #expect(!command.shellCommand.contains("ws://"))
 }
 
@@ -36,14 +39,18 @@ import Testing
     let command = AppServerShellCommand(codexPath: "codex")
     let prefix = #"export PATH="$HOME/.codex/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; "#
 
-    #expect(command.versionCommand == "\(prefix)codex --version")
-    #expect(command.proxyHelpCommand == "\(prefix)codex app-server proxy --help")
-    #expect(command.appServerHelpCommand == "\(prefix)codex app-server --help")
-    #expect(command.daemonStartCommand == "\(prefix)codex app-server daemon start")
-    #expect(command.proxyCommand == "\(prefix)codex app-server proxy")
-    #expect(command.appServerCommand.hasPrefix("\(prefix)SOCKET="))
-    #expect(command.appServerCommand.hasSuffix("; exec codex app-server --listen stdio://"))
-    #expect(command.appServerCommand.contains("; fi; exec codex app-server --listen stdio://"))
+    #expect(command.versionCommand == "\(prefix)'codex' --version")
+    #expect(command.proxyHelpCommand == "\(prefix)'codex' app-server proxy --help")
+    #expect(command.appServerHelpCommand == "\(prefix)'codex' app-server --help")
+    #expect(command.daemonStartCommand == "\(prefix)'codex' app-server daemon start")
+    #expect(command.proxyCommand == "\(prefix)'codex' app-server proxy")
+    #expect(command.appServerCommand == "\(prefix)'codex' app-server --listen stdio://")
+}
+
+@Test func appServerShellCommandQuotesCodexPathAsSingleShellArgument() {
+    let command = AppServerShellCommand(codexPath: "codex'; rm -rf ~/.codex; '")
+
+    #expect(command.appServerCommand.contains(#"'codex'\''; rm -rf ~/.codex; '\''' app-server --listen stdio://"#))
 }
 
 @Test func jsonRPCCodecReportsRawInvalidMessages() throws {

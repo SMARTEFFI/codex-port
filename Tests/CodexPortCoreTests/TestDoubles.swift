@@ -83,6 +83,7 @@ final class RecordingCodexTransport: CodexTransport, @unchecked Sendable {
     struct Request: Equatable {
         var method: String
         var params: JSONValue
+        var timeoutSeconds: Double?
     }
 
     private(set) var requests: [Request] = []
@@ -90,11 +91,11 @@ final class RecordingCodexTransport: CodexTransport, @unchecked Sendable {
     var error: Error?
     var methods: [String] { requests.map(\.method) }
 
-    func request(method: String, params: JSONValue) async throws -> JSONValue {
+    func request(method: String, params: JSONValue, timeoutSeconds: Double? = nil) async throws -> JSONValue {
         if let error {
             throw error
         }
-        requests.append(Request(method: method, params: params))
+        requests.append(Request(method: method, params: params, timeoutSeconds: timeoutSeconds))
         if let response = stubbedResponses[method] {
             return response
         }
@@ -111,7 +112,19 @@ final class RecordingCodexTransport: CodexTransport, @unchecked Sendable {
     }
 }
 
-final class FakeCodexProtocol: CodexProtocolClient, ThreadDetailProviding, @unchecked Sendable {
+final class JSONRPCClientCodexTransport: CodexTransport, @unchecked Sendable {
+    private let client: JSONRPCClient
+
+    init(client: JSONRPCClient) {
+        self.client = client
+    }
+
+    func request(method: String, params: JSONValue, timeoutSeconds: Double?) async throws -> JSONValue {
+        try await client.request(method: method, params: params, timeoutSeconds: timeoutSeconds)
+    }
+}
+
+class FakeCodexProtocol: CodexProtocolClient, ThreadDetailProviding, @unchecked Sendable {
     var directoryListings: [String: [RemoteDirectoryEntry]] = [:]
     var metadata: [String: RemoteMetadata] = [:]
     var createdDirectories: [CreatedDirectory] = []
@@ -119,6 +132,8 @@ final class FakeCodexProtocol: CodexProtocolClient, ThreadDetailProviding, @unch
     var startedThreadID = "thread-started"
     var startedThreadCWD: String?
     var thread: ThreadDetail?
+    var resumeThreadResponse: JSONValue?
+    var pagedTurnResponses: [JSONValue] = []
     var calls: [String] = []
     var interrupted: InterruptRequest?
     var lastTurnStart: TurnStartRecord?
@@ -131,7 +146,33 @@ final class FakeCodexProtocol: CodexProtocolClient, ThreadDetailProviding, @unch
 
     func resumeThread(id: String) async throws -> JSONValue {
         calls.append("thread/resume")
-        return .object(["threadId": .string(id)])
+        return resumeThreadResponse ?? .object(["threadId": .string(id)])
+    }
+
+    func resumeThread(id: String, initialTurnLimit: Int) async throws -> JSONValue {
+        calls.append("thread/resume(initialTurnLimit:\(initialTurnLimit))")
+        return resumeThreadResponse ?? .object(["threadId": .string(id)])
+    }
+
+    func resumeThread(id: String, initialTurnLimit: Int, timeoutSeconds: Double?) async throws -> JSONValue {
+        calls.append("thread/resume(initialTurnLimit:\(initialTurnLimit),timeout:\(timeoutDescription(timeoutSeconds)))")
+        return resumeThreadResponse ?? .object(["threadId": .string(id)])
+    }
+
+    func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String) async throws -> JSONValue {
+        calls.append("thread/turns/list(cursor:\(cursor ?? "nil"),limit:\(limit),sort:\(sortDirection),items:\(itemsView))")
+        if pagedTurnResponses.isEmpty {
+            return .object(["data": .array([]), "nextCursor": .null])
+        }
+        return pagedTurnResponses.removeFirst()
+    }
+
+    func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String, timeoutSeconds: Double?) async throws -> JSONValue {
+        calls.append("thread/turns/list(cursor:\(cursor ?? "nil"),limit:\(limit),sort:\(sortDirection),items:\(itemsView),timeout:\(timeoutDescription(timeoutSeconds)))")
+        if pagedTurnResponses.isEmpty {
+            return .object(["data": .array([]), "nextCursor": .null])
+        }
+        return pagedTurnResponses.removeFirst()
     }
 
     func startThread(cwd: String) async throws -> String {
@@ -215,6 +256,22 @@ struct TurnSteerRecord: Equatable {
     var turnID: String
     var prompt: String
     var attachments: [TurnAttachment]
+}
+
+final class LegacyResumeOnlyCodexProtocol: FakeCodexProtocol, @unchecked Sendable {
+    override func resumeThread(id: String, initialTurnLimit: Int) async throws -> JSONValue {
+        calls.append("thread/resume(initialTurnLimit:\(initialTurnLimit))")
+        throw JSONRPCError.remote(code: -32602, message: "unknown field initialTurnsPage")
+    }
+
+    override func resumeThread(id: String, initialTurnLimit: Int, timeoutSeconds: Double?) async throws -> JSONValue {
+        calls.append("thread/resume(initialTurnLimit:\(initialTurnLimit),timeout:\(timeoutDescription(timeoutSeconds)))")
+        throw JSONRPCError.remote(code: -32602, message: "unknown field initialTurnsPage")
+    }
+}
+
+private func timeoutDescription(_ timeoutSeconds: Double?) -> String {
+    timeoutSeconds.map { "\($0)" } ?? "nil"
 }
 
 final class FakeSSHDriver: SSHDriver, @unchecked Sendable {

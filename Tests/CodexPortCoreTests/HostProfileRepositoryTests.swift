@@ -43,10 +43,13 @@ import Testing
         username: "root",
         auth: .password("secret-password", protection: .localEncrypted),
         codexPath: "codex",
-        startupCommand: AppServerStartupCommand(codexPath: "codex").shellCommand,
+        startupCommand: "codex app-server daemon restart && rm -rf ~/.codex/app-server-control",
         defaultDirectory: "~"
     ))
     let originalCredentialID = profile.auth.credentialID
+    #expect(profile.startupCommand == AppServerStartupCommand(codexPath: "codex").shellCommand)
+    #expect(!profile.startupCommand.contains("daemon restart"))
+    #expect(!profile.startupCommand.contains("rm -rf"))
 
     let reloaded = try PersistentHostProfileStore(repository: repository, credentialVault: vault)
     #expect(reloaded.list().map(\.id) == [profile.id])
@@ -74,6 +77,8 @@ import Testing
     #expect(try repository.load().first?.name == "Mac")
     let storedJSON = try String(contentsOf: url, encoding: .utf8)
     #expect(!storedJSON.contains("raw-private-key"))
+    #expect(!storedJSON.contains("daemon restart"))
+    #expect(!storedJSON.contains("rm -rf"))
 
     let metadataOnlyUpdate = try reloaded.update(profile.id, with: HostProfileDraft(
         name: "Mac Studio",

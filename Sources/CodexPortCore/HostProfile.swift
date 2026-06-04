@@ -169,7 +169,7 @@ public final class HostProfileStore {
             username: draft.username,
             auth: auth,
             codexPath: draft.codexPath,
-            startupCommand: draft.startupCommand,
+            startupCommand: AppServerStartupCommand(codexPath: draft.codexPath).shellCommand,
             defaultDirectory: draft.defaultDirectory,
             knownHostFingerprint: knownHostFingerprint
         )

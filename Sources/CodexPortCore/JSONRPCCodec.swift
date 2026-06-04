@@ -109,15 +109,15 @@ public struct AppServerShellCommand: Equatable, Sendable {
     }
 
     public var versionCommand: String {
-        command("\(codexPath) --version")
+        command("\(quotedCodexPath) --version")
     }
 
     public var proxyHelpCommand: String {
-        command("\(codexPath) app-server proxy --help")
+        command("\(quotedCodexPath) app-server proxy --help")
     }
 
     public var appServerHelpCommand: String {
-        command("\(codexPath) app-server --help")
+        command("\(quotedCodexPath) app-server --help")
     }
 
     public var daemonStartCommand: String {
@@ -129,192 +129,30 @@ public struct AppServerShellCommand: Equatable, Sendable {
     }
 
     public var appServerCommand: String {
-        command(sharedAppServerBridgeBody)
+        command("\(quotedCodexPath) app-server --listen stdio://")
     }
 
     private func command(_ body: String) -> String {
         "\(Self.pathExport); \(body)"
     }
 
-    private var sharedAppServerBridgeBody: String {
-        let bridgeScript = Self.singleQuoted(Self.webSocketBridgeNodeScript.replacingOccurrences(of: "\n", with: " "))
-        return #"SOCKET="${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock"; if [ -S "$SOCKET" ] && command -v node >/dev/null 2>&1; then node -e \#(bridgeScript) "$SOCKET"; STATUS=$?; [ "$STATUS" -eq 0 ] && exit 0; fi; exec \#(codexPath) app-server --listen stdio://"#
-    }
-
     private var daemonStartBody: String {
-        "\(codexPath) app-server daemon start"
+        "\(quotedCodexPath) app-server daemon start"
     }
 
     private var proxyBody: String {
-        "\(codexPath) app-server proxy"
+        "\(quotedCodexPath) app-server proxy"
     }
 
     private static let pathExport = #"export PATH="$HOME/.codex/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH""#
 
+    private var quotedCodexPath: String {
+        Self.singleQuoted(codexPath)
+    }
+
     private static func singleQuoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
-
-    private static let webSocketBridgeNodeScript = #"""
-const net=require("net");
-const crypto=require("crypto");
-const socketPath=process.argv[1];
-const socket=net.createConnection(socketPath);
-let headerBuffer=Buffer.alloc(0);
-let frameBuffer=Buffer.alloc(0);
-let ready=false;
-let outboundQueue=[];
-let stdinBuffer="";
-let fragmentOpcode=null;
-let fragments=[];
-function frame(opcode,payload){
-  payload=Buffer.isBuffer(payload)?payload:Buffer.from(payload);
-  let header;
-  if(payload.length<126){
-    header=Buffer.from([0x80|opcode,0x80|payload.length]);
-  }else if(payload.length<65536){
-    header=Buffer.alloc(4);
-    header[0]=0x80|opcode;
-    header[1]=0x80|126;
-    header.writeUInt16BE(payload.length,2);
-  }else{
-    header=Buffer.alloc(10);
-    header[0]=0x80|opcode;
-    header[1]=0x80|127;
-    header.writeBigUInt64BE(BigInt(payload.length),2);
-  }
-  const mask=crypto.randomBytes(4);
-  const masked=Buffer.alloc(payload.length);
-  for(let i=0;i<payload.length;i++) masked[i]=payload[i]^mask[i%4];
-  return Buffer.concat([header,mask,masked]);
-}
-function sendText(line){
-  if(!ready){
-    outboundQueue.push(line);
-    return;
-  }
-  socket.write(frame(1,Buffer.from(line)));
-}
-function flushQueue(){
-  for(const line of outboundQueue) socket.write(frame(1,Buffer.from(line)));
-  outboundQueue=[];
-}
-function handleFrame(fin,opcode,payload){
-  if(opcode===1){
-    if(fin){
-      process.stdout.write(payload.toString()+"\n");
-    }else{
-      fragmentOpcode=1;
-      fragments=[payload];
-    }
-    return;
-  }
-  if(opcode===0&&fragmentOpcode===1){
-    fragments.push(payload);
-    if(fin){
-      process.stdout.write(Buffer.concat(fragments).toString()+"\n");
-      fragmentOpcode=null;
-      fragments=[];
-    }
-    return;
-  }
-  if(opcode===8){
-    socket.end();
-    return;
-  }
-  if(opcode===9){
-    socket.write(frame(10,payload));
-  }
-}
-function parseFrames(){
-  let offset=0;
-  while(offset+2<=frameBuffer.length){
-    const b0=frameBuffer[offset];
-    const b1=frameBuffer[offset+1];
-    const fin=(b0&0x80)!==0;
-    const opcode=b0&0x0f;
-    let length=b1&0x7f;
-    let position=offset+2;
-    if(length===126){
-      if(position+2>frameBuffer.length) break;
-      length=frameBuffer.readUInt16BE(position);
-      position+=2;
-    }else if(length===127){
-      if(position+8>frameBuffer.length) break;
-      const wideLength=frameBuffer.readBigUInt64BE(position);
-      if(wideLength>BigInt(Number.MAX_SAFE_INTEGER)){
-        socket.destroy();
-        return;
-      }
-      length=Number(wideLength);
-      position+=8;
-    }
-    const masked=(b1&0x80)!==0;
-    let mask;
-    if(masked){
-      if(position+4>frameBuffer.length) break;
-      mask=frameBuffer.subarray(position,position+4);
-      position+=4;
-    }
-    if(position+length>frameBuffer.length) break;
-    const payload=Buffer.from(frameBuffer.subarray(position,position+length));
-    if(masked){
-      for(let i=0;i<payload.length;i++) payload[i]^=mask[i%4];
-    }
-    handleFrame(fin,opcode,payload);
-    offset=position+length;
-  }
-  frameBuffer=frameBuffer.subarray(offset);
-}
-socket.on("connect",()=>{
-  const key=crypto.randomBytes(16).toString("base64");
-  const request=[
-    "GET / HTTP/1.1",
-    "Host: localhost",
-    "Upgrade: websocket",
-    "Connection: Upgrade",
-    "Sec-WebSocket-Key: "+key,
-    "Sec-WebSocket-Version: 13",
-    "",
-    ""
-  ].join("\r\n");
-  socket.write(request);
-});
-socket.on("data",chunk=>{
-  if(!ready){
-    headerBuffer=Buffer.concat([headerBuffer,chunk]);
-    const headerEnd=headerBuffer.indexOf("\r\n\r\n");
-    if(headerEnd===-1) return;
-    const header=headerBuffer.subarray(0,headerEnd).toString();
-    if(!/^HTTP\/1\.1 101\b/.test(header)){
-      socket.destroy();
-      process.exitCode=1;
-      return;
-    }
-    ready=true;
-    frameBuffer=Buffer.concat([frameBuffer,headerBuffer.subarray(headerEnd+4)]);
-    headerBuffer=Buffer.alloc(0);
-    flushQueue();
-  }else{
-    frameBuffer=Buffer.concat([frameBuffer,chunk]);
-  }
-  parseFrames();
-});
-socket.on("error",()=>{ process.exitCode=1; });
-socket.on("close",()=>process.exit());
-process.stdin.setEncoding("utf8");
-process.stdin.on("data",chunk=>{
-  stdinBuffer+=chunk;
-  let newlineIndex;
-  while((newlineIndex=stdinBuffer.indexOf("\n"))!==-1){
-    let line=stdinBuffer.slice(0,newlineIndex);
-    stdinBuffer=stdinBuffer.slice(newlineIndex+1);
-    if(line.endsWith("\r")) line=line.slice(0,-1);
-    if(line.length>0) sendText(line);
-  }
-});
-process.stdin.on("end",()=>socket.end());
-"""#
 }
 
 extension JSONRPCID {

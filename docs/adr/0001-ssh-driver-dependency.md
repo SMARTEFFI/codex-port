@@ -6,7 +6,7 @@ Accepted and implemented for the MVP baseline.
 
 ## Context
 
-The iOS client must connect to Mac/VPS/Linux hosts over SSH, run `codex app-server daemon start && codex app-server proxy`, and expose stdin/stdout as the transport for app-server JSON-RPC. The code keeps a tested `SSHDriver` boundary, fake driver, and a production SwiftNIO-backed implementation.
+The iOS client must connect to Mac/VPS/Linux hosts over SSH, run `codex app-server --listen stdio://`, and expose stdin/stdout as the transport for app-server JSON-RPC. The app intentionally avoids `daemon start`, `daemon restart`, `daemon stop`, and `app-server proxy` for this connection path so a normal connect attempt does not mutate or depend on the shared app-server daemon/control socket state. The code keeps a tested `SSHDriver` boundary, fake driver, and a production SwiftNIO-backed implementation.
 
 ## Decision
 

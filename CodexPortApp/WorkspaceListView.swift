@@ -9,8 +9,15 @@ struct WorkspaceListView: View {
     let recentThreads: [ThreadSummary]
     let onOpenSession: (ThreadSummary) -> Void
     let onBrowseWorkspace: () -> Void
-    let onGroupingChanged: () async -> Void
     @State private var expandedProjectIDs: Set<String> = []
+    @State private var expandedDayGroupIDs: Set<String> = []
+    @State private var collapsedProjectIDs: Set<String> = []
+    @State private var collapsedDayGroupIDs: Set<String> = []
+    @State private var visibleProjectGroupLimit = Self.initialVisibleGroupLimit
+    @State private var visibleDayGroupLimit = Self.initialVisibleGroupLimit
+
+    private static let initialVisibleGroupLimit = 5
+    private static let groupPageSize = 5
 
     init(
         grouping: Binding<WorkspaceGrouping>,
@@ -19,8 +26,7 @@ struct WorkspaceListView: View {
         dayThreadGroups: [WorkspaceDayThreadGroup] = [],
         recentThreads: [ThreadSummary],
         onOpenSession: @escaping (ThreadSummary) -> Void,
-        onBrowseWorkspace: @escaping () -> Void,
-        onGroupingChanged: @escaping () async -> Void = {}
+        onBrowseWorkspace: @escaping () -> Void
     ) {
         self._grouping = grouping
         self.projects = projects
@@ -29,7 +35,6 @@ struct WorkspaceListView: View {
         self.recentThreads = recentThreads
         self.onOpenSession = onOpenSession
         self.onBrowseWorkspace = onBrowseWorkspace
-        self.onGroupingChanged = onGroupingChanged
     }
 
     var body: some View {
@@ -38,34 +43,50 @@ struct WorkspaceListView: View {
                 if displayedProjectGroups.isEmpty {
                     emptyWorkspaceSection
                 } else {
-                    ForEach(displayedProjectGroups) { group in
+                    ForEach(visibleProjectGroups) { group in
                         Section {
-                            ForEach(threads(for: group)) { thread in
-                                Button {
-                                    onOpenSession(thread)
-                                } label: {
-                                    RecentThreadRow(thread: thread, showsProjectPath: false)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            if hiddenCount(for: group) > 0 {
-                                Button {
-                                    expandedProjectIDs.insert(group.id)
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Text("另有 \(hiddenCount(for: group)) 个更早会话")
-                                        Image(systemName: "chevron.down")
-                                            .font(.caption2.weight(.semibold))
+                            if !isCollapsed(group) {
+                                ForEach(threads(for: group)) { thread in
+                                    Button {
+                                        onOpenSession(thread)
+                                    } label: {
+                                        RecentThreadRow(thread: thread, showsProjectPath: false)
                                     }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.vertical, 8)
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
+                                if hiddenCount(for: group) > 0 {
+                                    Button {
+                                        expandedProjectIDs.insert(group.id)
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text("另有 \(hiddenCount(for: group)) 个更早会话")
+                                            Image(systemName: "chevron.down")
+                                                .font(.caption2.weight(.semibold))
+                                        }
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                         } header: {
-                            WorkspaceProjectHeader(project: group.project)
+                            WorkspaceProjectHeader(
+                                project: group.project,
+                                isCollapsed: isCollapsed(group),
+                                onToggleCollapse: {
+                                    toggleProjectCollapse(group.id)
+                                }
+                            )
                         }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
+                    }
+                    if hasMoreProjectGroups {
+                        WorkspaceGroupPaginationRow(
+                            title: "上拉加载更多项目",
+                            remainingCount: remainingProjectGroupCount,
+                            onLoadMore: loadMoreProjectGroups
+                        )
                         .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
                     }
                 }
@@ -73,17 +94,54 @@ struct WorkspaceListView: View {
                 if recentThreads.isEmpty {
                     emptyWorkspaceSection
                 } else {
-                    ForEach(displayedDayGroups) { group in
-                        Section(group.title) {
-                            ForEach(group.threads) { thread in
-                                Button {
-                                    onOpenSession(thread)
-                                } label: {
-                                    RecentThreadRow(thread: thread, showsProjectPath: true)
+                    ForEach(visibleDayGroups) { group in
+                        Section {
+                            if !isCollapsed(group) {
+                                ForEach(threads(for: group)) { thread in
+                                    Button {
+                                        onOpenSession(thread)
+                                    } label: {
+                                        RecentThreadRow(thread: thread, showsProjectPath: true)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
+                                if hiddenCount(for: group) > 0 {
+                                    Button {
+                                        expandedDayGroupIDs.insert(group.id)
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text("另有 \(hiddenCount(for: group)) 个更早会话")
+                                            Image(systemName: "chevron.down")
+                                                .font(.caption2.weight(.semibold))
+                                        }
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
+                        } header: {
+                            WorkspaceGroupHeader(
+                                iconName: "calendar",
+                                title: group.title,
+                                metadata: ["\(group.threads.count) 个会话"],
+                                activityIndicator: dayActivityIndicator(for: group),
+                                isCollapsed: isCollapsed(group),
+                                accessibilityName: "\(group.title) 分组",
+                                onToggleCollapse: {
+                                    toggleDayGroupCollapse(group.id)
+                                }
+                            )
                         }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
+                    }
+                    if hasMoreDayGroups {
+                        WorkspaceGroupPaginationRow(
+                            title: "上拉加载更多日期",
+                            remainingCount: remainingDayGroupCount,
+                            onLoadMore: loadMoreDayGroups
+                        )
                         .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
                     }
                 }
@@ -93,6 +151,12 @@ struct WorkspaceListView: View {
         .scrollContentBackground(.hidden)
         .background(Color(.systemGroupedBackground))
         .navigationTitle("工作区")
+        .onChange(of: displayedProjectGroups.map(\.id)) {
+            visibleProjectGroupLimit = Self.initialVisibleGroupLimit
+        }
+        .onChange(of: displayedDayGroups.map(\.id)) {
+            visibleDayGroupLimit = Self.initialVisibleGroupLimit
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -138,6 +202,30 @@ struct WorkspaceListView: View {
         ]
     }
 
+    private var visibleProjectGroups: [WorkspaceProjectThreadGroup] {
+        Array(displayedProjectGroups.prefix(visibleProjectGroupLimit))
+    }
+
+    private var visibleDayGroups: [WorkspaceDayThreadGroup] {
+        Array(displayedDayGroups.prefix(visibleDayGroupLimit))
+    }
+
+    private var hasMoreProjectGroups: Bool {
+        displayedProjectGroups.count > visibleProjectGroupLimit
+    }
+
+    private var hasMoreDayGroups: Bool {
+        displayedDayGroups.count > visibleDayGroupLimit
+    }
+
+    private var remainingProjectGroupCount: Int {
+        max(displayedProjectGroups.count - visibleProjectGroupLimit, 0)
+    }
+
+    private var remainingDayGroupCount: Int {
+        max(displayedDayGroups.count - visibleDayGroupLimit, 0)
+    }
+
     private func threads(for group: WorkspaceProjectThreadGroup) -> [ThreadSummary] {
         if expandedProjectIDs.contains(group.id) {
             return recentThreads.filter { $0.cwd == group.project.cwd }
@@ -152,10 +240,74 @@ struct WorkspaceListView: View {
         return group.hiddenThreadCount
     }
 
+    private func threads(for group: WorkspaceDayThreadGroup) -> [ThreadSummary] {
+        if expandedDayGroupIDs.contains(group.id) {
+            return group.threads
+        }
+        return Array(group.threads.prefix(5))
+    }
+
+    private func hiddenCount(for group: WorkspaceDayThreadGroup) -> Int {
+        if expandedDayGroupIDs.contains(group.id) {
+            return 0
+        }
+        return max(group.threads.count - 5, 0)
+    }
+
+    private func isCollapsed(_ group: WorkspaceProjectThreadGroup) -> Bool {
+        collapsedProjectIDs.contains(group.id)
+    }
+
+    private func toggleProjectCollapse(_ id: String) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if collapsedProjectIDs.contains(id) {
+                collapsedProjectIDs.remove(id)
+            } else {
+                collapsedProjectIDs.insert(id)
+            }
+        }
+    }
+
+    private func isCollapsed(_ group: WorkspaceDayThreadGroup) -> Bool {
+        collapsedDayGroupIDs.contains(group.id)
+    }
+
+    private func toggleDayGroupCollapse(_ id: String) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if collapsedDayGroupIDs.contains(id) {
+                collapsedDayGroupIDs.remove(id)
+            } else {
+                collapsedDayGroupIDs.insert(id)
+            }
+        }
+    }
+
+    private func dayActivityIndicator(for group: WorkspaceDayThreadGroup) -> WorkspaceActivityIndicator {
+        let indicators = group.threads.map(\.activityIndicator)
+        if indicators.contains(.running) {
+            return .running
+        }
+        if indicators.contains(.unread) {
+            return .unread
+        }
+        return .none
+    }
+
     private func setGrouping(_ nextGrouping: WorkspaceGrouping) {
         guard grouping != nextGrouping else { return }
         grouping = nextGrouping
-        Task { await onGroupingChanged() }
+        visibleProjectGroupLimit = Self.initialVisibleGroupLimit
+        visibleDayGroupLimit = Self.initialVisibleGroupLimit
+    }
+
+    private func loadMoreProjectGroups() {
+        guard hasMoreProjectGroups else { return }
+        visibleProjectGroupLimit += Self.groupPageSize
+    }
+
+    private func loadMoreDayGroups() {
+        guard hasMoreDayGroups else { return }
+        visibleDayGroupLimit += Self.groupPageSize
     }
 
     private var emptyWorkspaceSection: some View {
@@ -174,43 +326,90 @@ struct WorkspaceListView: View {
 
 private struct WorkspaceProjectHeader: View {
     let project: WorkspaceProject
+    let isCollapsed: Bool
+    let onToggleCollapse: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                Image(systemName: "folder")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                Text(projectName)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .textCase(nil)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                WorkspaceActivityIndicatorView(indicator: project.activityIndicator)
-            }
-            HStack(spacing: 8) {
-                Text("\(project.sessionCount) 个会话")
-                Text(project.latestActivity, style: .relative)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            if let gitInfo = project.gitInfo, !gitInfo.repository.isEmpty {
-                Text("\(gitInfo.repository) · \(gitInfo.branch)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        WorkspaceGroupHeader(
+            iconName: "folder",
+            title: projectName,
+            metadata: [
+                "\(project.sessionCount) 个会话",
+                project.latestActivity.formatted(.relative(presentation: .numeric))
+            ],
+            detail: gitDetail,
+            activityIndicator: project.activityIndicator,
+            isCollapsed: isCollapsed,
+            accessibilityName: "\(projectName) 分组",
+            onToggleCollapse: onToggleCollapse
+        )
     }
 
     private var projectName: String {
         URL(fileURLWithPath: project.cwd).lastPathComponent
+    }
+
+    private var gitDetail: String? {
+        guard let gitInfo = project.gitInfo, !gitInfo.repository.isEmpty else {
+            return nil
+        }
+        return "\(gitInfo.repository) · \(gitInfo.branch)"
+    }
+}
+
+private struct WorkspaceGroupHeader: View {
+    let iconName: String
+    let title: String
+    let metadata: [String]
+    var detail: String?
+    let activityIndicator: WorkspaceActivityIndicator
+    let isCollapsed: Bool
+    let accessibilityName: String
+    let onToggleCollapse: () -> Void
+
+    var body: some View {
+        Button(action: onToggleCollapse) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 10) {
+                    Image(systemName: iconName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(title)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                    Spacer()
+                    WorkspaceActivityIndicatorView(indicator: activityIndicator)
+                }
+                if !metadata.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(metadata, id: \.self) { value in
+                            Text(value)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .textCase(nil)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityName)
+        .accessibilityValue(isCollapsed ? "已折叠" : "已展开")
+        .accessibilityHint(isCollapsed ? "展开会话" : "折叠会话")
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 }
 
@@ -239,6 +438,28 @@ private struct RecentThreadRow: View {
             WorkspaceActivityIndicatorView(indicator: thread.activityIndicator)
         }
         .padding(.vertical, 10)
+    }
+}
+
+private struct WorkspaceGroupPaginationRow: View {
+    let title: String
+    let remainingCount: Int
+    let onLoadMore: () -> Void
+
+    var body: some View {
+        Button(action: onLoadMore) {
+            HStack(spacing: 6) {
+                Text("\(title)，剩余 \(remainingCount) 个")
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.plain)
+        .onAppear(perform: onLoadMore)
     }
 }
 

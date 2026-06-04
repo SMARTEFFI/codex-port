@@ -104,7 +104,7 @@ public struct ConnectionDiagnostics: Sendable {
                 ])
             case let .timedOut(seconds):
                 return DiagnosticReport(rows: [
-                    DiagnosticRow(title: "SSH 连接", status: .failed, message: "连接或远端命令超过 \(Int(seconds)) 秒未响应。请检查 host、端口、网络和 SSH 服务。")
+                    DiagnosticRow(title: "SSH 连接", status: .failed, message: "连接或远端命令超过 \(Self.displaySeconds(seconds)) 秒未响应。请检查 host、端口、网络和 SSH 服务。")
                 ])
             case let .connectionClosed(message):
                 return DiagnosticReport(rows: [
@@ -140,6 +140,9 @@ public struct ConnectionDiagnostics: Sendable {
         if case let JSONRPCError.remote(_, message) = error {
             return await report(for: [.initializeFailed(message)])
         }
+        if case let JSONRPCError.requestTimedOut(method, seconds) = error {
+            return await report(for: [.initializeFailed("\(method) 超过 \(Self.displaySeconds(seconds)) 秒未响应")])
+        }
         return DiagnosticReport(rows: [
             DiagnosticRow(title: "未知错误", status: .failed, message: String(describing: error))
         ])
@@ -172,6 +175,13 @@ public struct ConnectionDiagnostics: Sendable {
             || lowercased.contains("command not found: codex")
             || lowercased.contains("codex: not found")
             || lowercased.contains("no such file or directory") && lowercased.contains("codex")
+    }
+
+    private static func displaySeconds(_ seconds: Double) -> String {
+        if seconds >= 1 {
+            return "\(Int(seconds))"
+        }
+        return String(format: "%.2f", seconds)
     }
 }
 

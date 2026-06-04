@@ -20,6 +20,9 @@ import Testing
     )
 
     #expect(saved.name == "Public VPS")
+    #expect(saved.startupCommand == AppServerStartupCommand(codexPath: "/opt/homebrew/bin/codex").shellCommand)
+    #expect(!saved.startupCommand.contains("daemon"))
+    #expect(!saved.startupCommand.contains("proxy"))
     #expect(saved.auth == .password(credentialID: saved.auth.credentialID!))
     #expect(vault.rawStoredSecret(id: saved.auth.credentialID!) == "secret-password")
     #expect(try vault.readSecret(id: saved.auth.credentialID!, authorization: .denied) == "secret-password")
@@ -40,6 +43,7 @@ import Testing
     )
 
     #expect(edited.name == "Mac Studio")
+    #expect(edited.startupCommand == AppServerStartupCommand(codexPath: "codex").shellCommand)
     guard case let .key(label, credentialID) = edited.auth else {
         Issue.record("Expected key auth")
         return
@@ -83,4 +87,26 @@ import Testing
 
     #expect(verifier.evaluate(profileID: profileID, presentedFingerprint: "SHA256:first") == .trusted)
     #expect(verifier.evaluate(profileID: profileID, presentedFingerprint: "SHA256:changed") == .changed(expected: "SHA256:first", presented: "SHA256:changed"))
+}
+
+@Test func hostProfileStoreDoesNotPersistDraftStartupCommand() throws {
+    let vault = InMemoryCredentialVault()
+    let store = HostProfileStore(credentialVault: vault)
+
+    let saved = try store.create(
+        HostProfileDraft(
+            name: "Mac",
+            host: "mac.local",
+            port: 22,
+            username: "chenm",
+            auth: .password("secret-password", protection: .localEncrypted),
+            codexPath: "codex",
+            startupCommand: "codex app-server daemon restart && rm -rf ~/.codex/app-server-control",
+            defaultDirectory: "~"
+        )
+    )
+
+    #expect(saved.startupCommand == AppServerStartupCommand(codexPath: "codex").shellCommand)
+    #expect(!saved.startupCommand.contains("daemon restart"))
+    #expect(!saved.startupCommand.contains("rm -rf"))
 }

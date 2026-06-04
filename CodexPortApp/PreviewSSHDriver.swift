@@ -35,8 +35,6 @@ final class PreviewSSHDriver: SSHDriver, @unchecked Sendable {
             return SSHCommandResult(stdout: Data("codex-cli 0.133.0\n".utf8), exitStatus: 0)
         case _ where request.command.contains("app-server --help"):
             return SSHCommandResult(stdout: Data("Usage: codex app-server\n".utf8), exitStatus: 0)
-        case _ where request.command.contains("daemon start"):
-            return SSHCommandResult(stdout: Data("daemon started\n".utf8), exitStatus: 0)
         default:
             return SSHCommandResult(exitStatus: 0)
         }

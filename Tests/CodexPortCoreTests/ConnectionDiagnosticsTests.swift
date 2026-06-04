@@ -136,6 +136,6 @@ import Testing
     let report = await runner.run(profile: profile, decision: .confirmUnknownHost)
 
     #expect(report.rows == [
-        DiagnosticRow(title: "SSH 连接", status: .failed, message: "连接或远端命令超过 0 秒未响应。请检查 host、端口、网络和 SSH 服务。")
+        DiagnosticRow(title: "SSH 连接", status: .failed, message: "连接或远端命令超过 0.05 秒未响应。请检查 host、端口、网络和 SSH 服务。")
     ])
 }

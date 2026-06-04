@@ -12,6 +12,7 @@ struct SessionDetailView: View {
     @State private var sessionStore: SessionStore?
     @State private var timeline = SessionTimelineState()
     @State private var errorMessage: String?
+    @State private var isLoadingHistory = false
     @State private var approvalRequest: ApprovalRequest?
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isPhotoPickerPresented = false
@@ -36,6 +37,15 @@ struct SessionDetailView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
+                        if let sessionStore, sessionStore.hasEarlierHistory {
+                            LoadEarlierHistoryButton(
+                                loadedCount: sessionStore.loadedHistoryItemCount,
+                                totalCount: sessionStore.totalHistoryItemCount,
+                                isTotalCountKnown: sessionStore.isTotalHistoryCountKnown,
+                                action: loadEarlierHistory
+                            )
+                        }
+
                         ForEach(TranscriptPresentation.rows(
                             for: timeline.items,
                             expandedToolRowIDs: expandedToolRowIDs,
@@ -71,6 +81,20 @@ struct SessionDetailView: View {
                         )
                     }
                 }
+                .overlay {
+                    if isLoadingHistory, timeline.items.isEmpty {
+                        SessionLoadingView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if shouldShowJumpToLatestButton {
+                        JumpToLatestButton(action: jumpToLatestMessage)
+                            .padding(.bottom, 14)
+                            .transition(.scale(scale: 0.9).combined(with: .opacity))
+                    }
+                }
+                .animation(.snappy, value: shouldShowJumpToLatestButton)
                 .onChange(of: scrollAnchor) { _, anchor in
                     withAnimation(.snappy) {
                         proxy.scrollTo(anchor, anchor: .bottom)
@@ -106,7 +130,9 @@ struct SessionDetailView: View {
             }
             let store = SessionStore(protocolClient: protocolClient)
             do {
+                isLoadingHistory = true
                 try await store.open(threadID: threadID)
+                isLoadingHistory = false
                 sessionStore = store
                 updateTimeline(store.visibleItems, source: .initialLoad)
                 listenForSessionEvents(store: store)
@@ -114,7 +140,8 @@ struct SessionDetailView: View {
                     updateTimeline([.assistantMessage("会话暂无可显示历史。")], source: .initialLoad)
                 }
             } catch {
-                errorMessage = String(describing: error)
+                isLoadingHistory = false
+                errorMessage = sessionErrorMessage(for: error)
             }
         }
         .onDisappear {
@@ -192,7 +219,7 @@ struct SessionDetailView: View {
                     composer.attachments.removeAll()
                     composer.isRunning = sessionStore.status == .running
                 } catch {
-                    errorMessage = String(describing: error)
+                    errorMessage = sessionErrorMessage(for: error)
                 }
             }
         } else {
@@ -214,9 +241,26 @@ struct SessionDetailView: View {
                 try await sessionStore.interrupt()
                 composer.isRunning = false
             } catch {
-                errorMessage = String(describing: error)
+                errorMessage = sessionErrorMessage(for: error)
             }
         }
+    }
+
+    private func loadEarlierHistory() {
+        guard let sessionStore else { return }
+        Task {
+            do {
+                try await sessionStore.loadEarlierHistory()
+                updateTimeline(sessionStore.visibleItems, source: .historyPrepend)
+            } catch {
+                errorMessage = sessionErrorMessage(for: error)
+            }
+        }
+    }
+
+    private func jumpToLatestMessage() {
+        timeline.userReturnedToBottom()
+        scrollAnchor = UUID()
     }
 
     private func listenForSessionEvents(store: SessionStore) {
@@ -246,6 +290,8 @@ struct SessionDetailView: View {
         switch source {
         case .initialLoad:
             anchor = timeline.replaceLoadedItems(items)
+        case .historyPrepend:
+            anchor = timeline.prependHistoryItems(items)
         case .liveUpdate:
             anchor = timeline.applyLiveItems(items)
         }
@@ -275,7 +321,7 @@ struct SessionDetailView: View {
                 try await events.respond(to: response.id, result: response.result)
                 approvalRequest = nil
             } catch {
-                errorMessage = String(describing: error)
+                errorMessage = sessionErrorMessage(for: error)
             }
         }
     }
@@ -286,6 +332,20 @@ struct SessionDetailView: View {
         } else {
             expandedToolRowIDs.insert(id)
         }
+    }
+
+    private func sessionErrorMessage(for error: Error) -> String {
+        if case let JSONRPCError.requestTimedOut(method, seconds) = error {
+            if method == "thread/resume" || method == "thread/turns/list" {
+                return "加载会话历史超过 \(Int(seconds)) 秒未响应。请返回后重试，或稍后重新连接 Codex。"
+            }
+            return "\(method) 请求超过 \(Int(seconds)) 秒未响应。"
+        }
+        return String(describing: error)
+    }
+
+    private var shouldShowJumpToLatestButton: Bool {
+        !timeline.isPinnedToBottom && !timeline.items.isEmpty && !isLoadingHistory
     }
 
     private var approvalBinding: Binding<IdentifiedApprovalRequest?> {
@@ -302,6 +362,7 @@ struct SessionDetailView: View {
 
 private enum TimelineUpdateSource {
     case initialLoad
+    case historyPrepend
     case liveUpdate
 }
 
@@ -400,6 +461,69 @@ private struct SessionItemView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
         }
+    }
+}
+
+private struct LoadEarlierHistoryButton: View {
+    let loadedCount: Int
+    let totalCount: Int
+    let isTotalCountKnown: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.up.circle")
+                Text("加载更早历史")
+                Text(progressText)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.footnote.weight(.medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(Color(.tertiarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("加载更早历史")
+    }
+
+    private var progressText: String {
+        isTotalCountKnown ? "\(loadedCount)/\(totalCount)" : "已加载 \(loadedCount)"
+    }
+}
+
+private struct SessionLoadingView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("正在加载近期历史")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct JumpToLatestButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 46, height: 46)
+                .background(.regularMaterial)
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.16), radius: 14, x: 0, y: 8)
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color(.separator).opacity(0.18), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("滚动到最新消息")
     }
 }
 
