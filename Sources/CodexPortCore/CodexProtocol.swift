@@ -19,13 +19,21 @@ public enum CollaborationMode: Equatable, Sendable {
     case `default`
     case plan
 
-    public var json: JSONValue {
+    public func json(model: CodexModel, reasoningEffort: ReasoningEffort) -> JSONValue {
         switch self {
         case .default:
-            return .object(["mode": .string("default"), "settings": .object([:])])
+            return .object(["mode": .string("default"), "settings": settings(model: model, reasoningEffort: reasoningEffort)])
         case .plan:
-            return .object(["mode": .string("plan"), "settings": .object([:])])
+            return .object(["mode": .string("plan"), "settings": settings(model: model, reasoningEffort: reasoningEffort)])
         }
+    }
+
+    private func settings(model: CodexModel, reasoningEffort: ReasoningEffort) -> JSONValue {
+        .object([
+            "model": .string(model.rawValue),
+            "reasoning_effort": .string(reasoningEffort.rawValue),
+            "developer_instructions": .null
+        ])
     }
 }
 
@@ -154,8 +162,14 @@ public final class CodexProtocolFacade: CodexProtocolClient {
     }
 
     @discardableResult
-    public func startThread(cwd: String) async throws -> String {
-        let response = try await transport.request(method: "thread/start", params: .object(["cwd": .string(cwd)]))
+    public func startThread(cwd: String, model: CodexModel = .gpt55) async throws -> String {
+        let response = try await transport.request(
+            method: "thread/start",
+            params: .object([
+                "cwd": .string(cwd),
+                "model": .string(model.rawValue)
+            ])
+        )
         let thread = response.object?["thread"]?.object
         return thread?["id"]?.string ?? thread?["sessionId"]?.string ?? response.object?["threadId"]?.string ?? response.object?["id"]?.string ?? ""
     }
@@ -165,15 +179,18 @@ public final class CodexProtocolFacade: CodexProtocolClient {
         threadID: String,
         prompt: String,
         attachments: [TurnAttachment] = [],
+        model: CodexModel = .gpt55,
+        reasoningEffort: ReasoningEffort = .xhigh,
         permissionMode: PermissionMode = .remoteDefault,
         collaborationMode: CollaborationMode = .default
     ) async throws -> JSONValue {
         var params: [String: JSONValue] = [
             "threadId": .string(threadID),
+            "model": .string(model.rawValue),
             "input": .array(inputItems(prompt: prompt, attachments: attachments))
         ]
         if collaborationMode != .default {
-            params["collaborationMode"] = collaborationMode.json
+            params["collaborationMode"] = collaborationMode.json(model: model, reasoningEffort: reasoningEffort)
         }
         for (key, value) in permissionMode.turnOverrides() {
             params[key] = value

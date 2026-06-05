@@ -16,6 +16,8 @@ final class AppConnectionState: ObservableObject {
     @Published var isConnectionLogPresented = false
     @Published private(set) var diagnosticReport = DiagnosticReport(rows: DiagnosticsView.defaultRows)
     @Published private(set) var isRunningDiagnostics = false
+    @Published private(set) var isReloadingWorkspaces = false
+    @Published private(set) var startingThreadCWDs: Set<String> = []
     @Published var grouping: WorkspaceGrouping = .byProject
     @Published var errorMessage: String?
     var onHostKeyTrusted: ((PendingHostKeyConfirmation) -> Void)?
@@ -100,10 +102,7 @@ final class AppConnectionState: ObservableObject {
             )
             try await store.reload(limit: 100)
             workspaceStore = store
-            projects = store.projects
-            projectThreadGroups = store.projectThreadGroups
-            dayThreadGroups = store.dayThreadGroups
-            recentThreads = store.recentThreads
+            publishWorkspaceStoreState()
             remoteBrowserStore = RemoteFileBrowserStore(
                 browser: RemoteFileBrowser(
                     protocolClient: connected.protocolClient,
@@ -127,13 +126,15 @@ final class AppConnectionState: ObservableObject {
 
     func reloadWorkspaces() async {
         guard let workspaceStore else { return }
+        guard !isReloadingWorkspaces else { return }
+        isReloadingWorkspaces = true
+        defer {
+            isReloadingWorkspaces = false
+        }
         do {
             workspaceStore.grouping = grouping
             try await workspaceStore.reload(limit: 100)
-            projects = workspaceStore.projects
-            projectThreadGroups = workspaceStore.projectThreadGroups
-            dayThreadGroups = workspaceStore.dayThreadGroups
-            recentThreads = workspaceStore.recentThreads
+            publishWorkspaceStoreState()
             errorMessage = nil
         } catch {
             errorMessage = workspaceStore.errorMessage ?? String(describing: error)
@@ -144,10 +145,7 @@ final class AppConnectionState: ObservableObject {
         guard let workspaceStore else { return }
         do {
             try workspaceStore.markThreadRead(id: threadID)
-            projects = workspaceStore.projects
-            projectThreadGroups = workspaceStore.projectThreadGroups
-            dayThreadGroups = workspaceStore.dayThreadGroups
-            recentThreads = workspaceStore.recentThreads
+            publishWorkspaceStoreState()
         } catch {
             errorMessage = String(describing: error)
         }
@@ -155,12 +153,19 @@ final class AppConnectionState: ObservableObject {
 
     func startThread(cwd: String) async -> String? {
         guard let session else { return nil }
+        guard !startingThreadCWDs.contains(cwd) else { return nil }
+        startingThreadCWDs.insert(cwd)
+        defer {
+            startingThreadCWDs.remove(cwd)
+        }
         do {
             let threadID = try await RemoteFileBrowser(
                 protocolClient: session.protocolClient,
                 homeDirectory: cwd,
                 historicalWorkspaces: projects.map(\.cwd)
             ).startThread(cwd: cwd)
+            workspaceStore?.upsertLocalThread(id: threadID, cwd: cwd, preview: "新会话")
+            publishWorkspaceStoreState()
             await reloadWorkspaces()
             return threadID
         } catch {
@@ -181,6 +186,14 @@ final class AppConnectionState: ObservableObject {
 
     private func appendConnectionLog(_ message: String, level: ConnectionLogEntry.Level = .info) {
         connectionLogs.append(ConnectionLogEntry(level: level, message: message))
+    }
+
+    private func publishWorkspaceStoreState() {
+        guard let workspaceStore else { return }
+        projects = workspaceStore.projects
+        projectThreadGroups = workspaceStore.projectThreadGroups
+        dayThreadGroups = workspaceStore.dayThreadGroups
+        recentThreads = workspaceStore.recentThreads
     }
 
     private func connectionErrorMessage(for error: Error) -> String {

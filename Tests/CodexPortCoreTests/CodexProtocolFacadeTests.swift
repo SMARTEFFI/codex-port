@@ -58,6 +58,10 @@ import Testing
     #expect(turnsListParams["limit"] == .number(10))
     #expect(turnsListParams["sortDirection"] == .string("desc"))
     #expect(turnsListParams["itemsView"] == .string("full"))
+
+    let startThreadParams = try #require(transport.requests[6].params.object)
+    #expect(startThreadParams["cwd"] == .string("/repo"))
+    #expect(startThreadParams["model"] == .string("gpt-5.5"))
 }
 
 @Test func turnSteerCarriesExpectedTurnAndInputInOfficialShape() async throws {
@@ -100,6 +104,8 @@ import Testing
             .localImage(path: "/remote/attachments/screen.png", detail: "high"),
             .remoteFile(path: "/remote/attachments/log.txt")
         ],
+        model: .gpt55,
+        reasoningEffort: .xhigh,
         permissionMode: .fullAccess,
         collaborationMode: .plan
     )
@@ -107,7 +113,11 @@ import Testing
     #expect(transport.methods == ["turn/start"])
     let params = try #require(transport.requests.first?.params.object)
     #expect(params["threadId"] == .string("thread-1"))
+    #expect(params["model"] == .string("gpt-5.5"))
     #expect(params["collaborationMode"]?.object?["mode"] == .string("plan"))
+    #expect(params["collaborationMode"]?.object?["settings"]?.object?["model"] == .string("gpt-5.5"))
+    #expect(params["collaborationMode"]?.object?["settings"]?.object?["reasoning_effort"] == .string("xhigh"))
+    #expect(params["collaborationMode"]?.object?["settings"]?.object?["developer_instructions"] == .null)
     #expect(params["sandboxPolicy"]?.object?["type"] == .string("dangerFullAccess"))
 
     let input = try #require(params["input"]?.array)

@@ -265,6 +265,7 @@ public final class WorkspaceListStore {
     public private(set) var recentThreads: [ThreadSummary] = []
     public private(set) var errorMessage: String?
     private var readAt: [String: Date]
+    private var localThreads: [String: ThreadSummary] = [:]
     private let now: @Sendable () -> Date
     private let calendar: Calendar
 
@@ -300,7 +301,11 @@ public final class WorkspaceListStore {
                 .map { ($0.id, $0.updatedAt) })
             try? readStateStore.saveReadAt(readAt)
         }
-        let threads = remoteThreads
+        let remoteThreadIDs = Set(remoteThreads.map(\.id))
+        localThreads = localThreads.filter { id, _ in
+            !remoteThreadIDs.contains(id)
+        }
+        let threads = (remoteThreads + Array(localThreads.values))
             .map { $0.applyingReadState(readAt[$0.id]) }
         let index = WorkspaceIndex(threads: threads)
         self.projects = index.projects()
@@ -321,6 +326,29 @@ public final class WorkspaceListStore {
         recentThreads = recentThreads.map { thread in
             thread.id == id ? thread.applyingReadState(readTime) : thread
         }
+        let index = WorkspaceIndex(threads: recentThreads)
+        projects = index.projects()
+        projectThreadGroups = index.projectThreadGroups(limit: 5)
+        dayThreadGroups = Self.dayThreadGroups(for: recentThreads, now: now(), calendar: calendar)
+    }
+
+    public func upsertLocalThread(id: String, cwd: String, preview: String = "") {
+        let createdAt = now()
+        let summary = ThreadSummary(
+            id: id,
+            cwd: cwd,
+            updatedAt: createdAt,
+            preview: preview,
+            gitInfo: nil,
+            status: .completed,
+            isUnread: false,
+            remoteUnread: false
+        )
+        localThreads[id] = summary
+        readAt[id] = createdAt
+        try? readStateStore.saveReadAt(readAt)
+        recentThreads.removeAll { $0.id == id }
+        recentThreads.insert(summary, at: 0)
         let index = WorkspaceIndex(threads: recentThreads)
         projects = index.projects()
         projectThreadGroups = index.projectThreadGroups(limit: 5)

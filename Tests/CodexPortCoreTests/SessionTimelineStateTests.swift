@@ -65,3 +65,15 @@ import Testing
         .assistantMessage("最新消息")
     ])
 }
+
+@Test func sessionTimelineReportsPinnedChangesOnlyWhenStateActuallyChanges() {
+    var timeline = SessionTimelineState(items: [
+        .assistantMessage("进行中的消息")
+    ])
+
+    #expect(timeline.userReturnedToBottom() == false)
+    #expect(timeline.userMovedAwayFromBottom() == true)
+    #expect(timeline.userMovedAwayFromBottom() == false)
+    #expect(timeline.userReturnedToBottom() == true)
+    #expect(timeline.setPinnedToBottom(true) == false)
+}

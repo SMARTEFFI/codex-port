@@ -286,9 +286,25 @@ import Testing
         threadID: "thread-1",
         prompt: "分析截图",
         attachments: [.localImage(path: "/remote/screen.png", detail: "high")],
+        model: .gpt55,
+        reasoningEffort: .xhigh,
         permissionMode: .autoReview,
         collaborationMode: .plan
     ))
+}
+
+@Test func sessionStoreOpensNewThreadWithoutResumingHistory() async throws {
+    let protocolClient = FakeCodexProtocol()
+    let store = SessionStore(protocolClient: protocolClient)
+
+    store.openNew(threadID: "thread-new")
+    try await store.send(prompt: "开始规划")
+
+    #expect(protocolClient.calls == ["turn/start"])
+    #expect(protocolClient.lastTurnStart?.threadID == "thread-new")
+    #expect(protocolClient.lastTurnStart?.model == .gpt55)
+    #expect(store.thread == ThreadDetail(id: "thread-new", turns: []))
+    #expect(store.visibleItems == [.userMessage("开始规划")])
 }
 
 @Test func sessionStoreResumesRunningThreadAndSteersInsteadOfStartingParallelTurn() async throws {
@@ -527,6 +543,74 @@ import Testing
     #expect(store.visibleItems == [
         .userMessage("电脑上发送的消息")
     ])
+}
+
+@Test func sessionStoreMergesItemStartedAndThreadStatusNotificationsFromAnotherClient() async throws {
+    let protocolClient = FakeCodexProtocol()
+    protocolClient.thread = ThreadDetail(id: "thread-1", turns: [])
+    let store = SessionStore(protocolClient: protocolClient)
+    try await store.open(threadID: "thread-1")
+
+    store.receive(notification: JSONRPCNotification(
+        method: "thread/status/changed",
+        params: .object([
+            "threadId": .string("thread-1"),
+            "status": .object(["type": .string("active"), "activeFlags": .array([])])
+        ])
+    ))
+    store.receive(notification: JSONRPCNotification(
+        method: "item/started",
+        params: .object([
+            "threadId": .string("thread-1"),
+            "turnId": .string("turn-remote"),
+            "startedAtMs": .number(1),
+            "item": .object([
+                "type": .string("userMessage"),
+                "id": .string("remote-user-1"),
+                "clientId": .null,
+                "content": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string("桌面端刚发送的消息"),
+                        "text_elements": .array([])
+                    ])
+                ])
+            ])
+        ])
+    ))
+    store.receive(notification: JSONRPCNotification(
+        method: "thread/status/changed",
+        params: .object([
+            "threadId": .string("thread-1"),
+            "status": .object(["type": .string("idle")])
+        ])
+    ))
+
+    #expect(store.visibleItems == [.userMessage("桌面端刚发送的消息")])
+    #expect(store.status == .completed)
+    #expect(store.runningTurnID == nil)
+}
+
+@Test func sessionStoreIgnoresNotificationsForOtherThreads() async throws {
+    let protocolClient = FakeCodexProtocol()
+    protocolClient.thread = ThreadDetail(id: "thread-1", turns: [])
+    let store = SessionStore(protocolClient: protocolClient)
+    try await store.open(threadID: "thread-1")
+
+    store.receive(notification: JSONRPCNotification(
+        method: "item/completed",
+        params: .object([
+            "threadId": .string("thread-2"),
+            "turnId": .string("turn-other"),
+            "item": .object([
+                "type": .string("agentMessage"),
+                "id": .string("agent-other"),
+                "text": .string("别的会话消息")
+            ])
+        ])
+    ))
+
+    #expect(store.visibleItems.isEmpty)
 }
 
 @Test func sessionStoreMergesOfficialCompletedUserItemsWithoutDuplicatingOptimisticMessages() async throws {

@@ -38,6 +38,7 @@ public enum VisibleItem: Equatable, Sendable {
 
 public enum SessionEvent: Equatable, Sendable {
     case turnStarted(threadID: String, turnID: String)
+    case threadStatusChanged(threadID: String, status: TurnStatus?)
     case itemCompleted(turnID: String, itemID: String, item: VisibleItem)
     case agentMessageDelta(turnID: String, itemID: String, delta: String)
     case commandOutputDelta(turnID: String, itemID: String, delta: String)
@@ -126,6 +127,21 @@ public final class SessionStore {
         restoreRunningState(threadID: threadID)
     }
 
+    public func openNew(threadID: String) {
+        thread = ThreadDetail(id: threadID, turns: [])
+        loadedTurnCount = 0
+        runningTurnID = nil
+        runningThreadID = threadID
+        status = nil
+        visibleItems = []
+        isTotalHistoryCountKnown = true
+        itemIndexByID.removeAll()
+        allHistoryItems = []
+        visibleHistoryStartIndex = 0
+        earlierTurnsCursor = nil
+        usesServerPagedHistory = false
+    }
+
     public func loadEarlierHistory() async throws {
         guard hasEarlierHistory else { return }
         if usesServerPagedHistory, let earlierTurnsCursor {
@@ -170,6 +186,8 @@ public final class SessionStore {
                 threadID: threadID,
                 prompt: composer.text,
                 attachments: composer.attachments,
+                model: composer.model,
+                reasoningEffort: composer.reasoningEffort,
                 permissionMode: composer.permissionMode,
                 collaborationMode: composer.collaborationMode
             )
@@ -186,6 +204,12 @@ public final class SessionStore {
     }
 
     public func receive(notification: JSONRPCNotification) {
+        if let notificationThreadID = notification.params.object?["threadId"]?.string ?? notification.params.object?["thread_id"]?.string {
+            let currentThreadID = thread?.id ?? runningThreadID
+            if let currentThreadID, notificationThreadID != currentThreadID {
+                return
+            }
+        }
         guard let event = SessionEvent(notification: notification) else { return }
         receive(event)
         mergeTurnItems(from: notification)
@@ -211,6 +235,12 @@ public final class SessionStore {
             runningThreadID = threadID
             runningTurnID = turnID
             status = .running
+        case let .threadStatusChanged(threadID, newStatus):
+            runningThreadID = threadID
+            status = newStatus
+            if newStatus != .running {
+                runningTurnID = nil
+            }
         case let .itemCompleted(_, itemID, item):
             if let index = itemIndexByID[itemID] {
                 visibleItems[index] = item
@@ -425,7 +455,7 @@ extension VisibleItem {
         case "userMessage", "user_message", "userInput":
             guard let text else { return nil }
             self = .userMessage(text)
-        case "assistantMessage", "assistant_message", "agentMessage", "message":
+        case "assistantMessage", "assistant_message", "agentMessage", "message", "plan", "reasoning":
             guard let text else { return nil }
             self = .assistantMessage(text)
         case "commandOutput", "command_output", "commandExecutionOutput":
@@ -484,6 +514,22 @@ extension SessionEvent {
         case "turn/started", "turnStarted":
             guard !turnID.isEmpty else { return nil }
             self = .turnStarted(threadID: threadID, turnID: turnID)
+        case "thread/status/changed":
+            let statusType = object["status"]?.object?["type"]?.string ?? object["status"]?.string
+            switch statusType {
+            case "active", "running", "inProgress":
+                self = .threadStatusChanged(threadID: threadID, status: .running)
+            case "idle", "completed", "notLoaded":
+                self = .threadStatusChanged(threadID: threadID, status: .completed)
+            default:
+                return nil
+            }
+        case "item/started":
+            guard
+                let item = object["item"].flatMap(VisibleItem.init(json:)),
+                let startedItemID = object["item"]?.object?["id"]?.string ?? object["itemId"]?.string ?? object["item_id"]?.string
+            else { return nil }
+            self = .itemCompleted(turnID: turnID, itemID: startedItemID, item: item)
         case "item/completed":
             guard
                 let item = object["item"].flatMap(VisibleItem.init(json:)),
@@ -503,7 +549,6 @@ extension SessionEvent {
                 diff: change?.diff ?? object["diff"]?.string ?? delta
             )
         case "turn/completed", "turnCompleted":
-            guard !turnID.isEmpty else { return nil }
             self = .turnCompleted(turnID: turnID)
         default:
             return nil

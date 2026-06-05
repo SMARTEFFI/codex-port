@@ -86,8 +86,8 @@ public protocol CodexProtocolClient: AnyObject, Sendable {
     func resumeThread(id: String, initialTurnLimit: Int, timeoutSeconds: Double?) async throws -> JSONValue
     func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String) async throws -> JSONValue
     func listThreadTurns(threadID: String, cursor: String?, limit: Int, sortDirection: String, itemsView: String, timeoutSeconds: Double?) async throws -> JSONValue
-    func startThread(cwd: String) async throws -> String
-    func startTurn(threadID: String, prompt: String, attachments: [TurnAttachment], permissionMode: PermissionMode, collaborationMode: CollaborationMode) async throws -> JSONValue
+    func startThread(cwd: String, model: CodexModel) async throws -> String
+    func startTurn(threadID: String, prompt: String, attachments: [TurnAttachment], model: CodexModel, reasoningEffort: ReasoningEffort, permissionMode: PermissionMode, collaborationMode: CollaborationMode) async throws -> JSONValue
     func steerTurn(threadID: String, turnID: String, prompt: String, attachments: [TurnAttachment]) async throws -> JSONValue
     func interruptTurn(threadID: String, turnID: String) async throws -> JSONValue
     func unsubscribeThread(id: String) async throws -> JSONValue
@@ -98,6 +98,10 @@ public protocol CodexProtocolClient: AnyObject, Sendable {
 }
 
 public extension CodexProtocolClient {
+    func startThread(cwd: String) async throws -> String {
+        try await startThread(cwd: cwd, model: .gpt55)
+    }
+
     func resumeThread(id: String, initialTurnLimit: Int) async throws -> JSONValue {
         try await resumeThread(id: id)
     }

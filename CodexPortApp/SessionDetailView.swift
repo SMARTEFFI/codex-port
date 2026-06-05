@@ -6,8 +6,10 @@ import UniformTypeIdentifiers
 
 struct SessionDetailView: View {
     let threadID: String
+    let isNewThread: Bool
     let protocolClient: CodexProtocolClient?
     let events: AppServerEventSource?
+    let foregroundRefreshSignal: Int
     @State private var composer = InputComposer(modelDisplay: "5.5 超高", capabilities: .appDefault)
     @State private var sessionStore: SessionStore?
     @State private var timeline = SessionTimelineState()
@@ -21,19 +23,36 @@ struct SessionDetailView: View {
     @State private var pendingAttachments: [PendingAttachment] = []
     @State private var notificationTask: Task<Void, Never>?
     @State private var serverRequestTask: Task<Void, Never>?
-    @State private var scrollAnchor = UUID()
+    @State private var liveTimelineRefreshTask: Task<Void, Never>?
+    @State private var syncPollingTask: Task<Void, Never>?
+    @State private var isRefreshingCurrentThread = false
     @State private var viewportHeight: CGFloat = 0
+    @State private var timelineBottomY: CGFloat = 0
     @State private var expandedToolRowIDs: Set<String> = []
+    @State private var isComposerExpanded = false
+    @State private var transcriptRows: [TranscriptRow] = []
+    @State private var scrollToBottomRequest = 0
     private let pickedAttachmentHandler = PickedAttachmentHandler()
+    private let bottomAnchorID = "session-bottom-anchor"
+    private let liveTimelineRefreshIntervalNanos: UInt64 = 80_000_000
+    private let currentThreadSyncIntervalNanos: UInt64 = 2_000_000_000
 
-    init(threadID: String, protocolClient: CodexProtocolClient?, events: AppServerEventSource? = nil) {
+    init(
+        threadID: String,
+        isNewThread: Bool = false,
+        protocolClient: CodexProtocolClient?,
+        events: AppServerEventSource? = nil,
+        foregroundRefreshSignal: Int = 0
+    ) {
         self.threadID = threadID
+        self.isNewThread = isNewThread
         self.protocolClient = protocolClient
         self.events = events
+        self.foregroundRefreshSignal = foregroundRefreshSignal
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
@@ -46,11 +65,7 @@ struct SessionDetailView: View {
                             )
                         }
 
-                        ForEach(TranscriptPresentation.rows(
-                            for: timeline.items,
-                            expandedToolRowIDs: expandedToolRowIDs,
-                            status: sessionStore?.status
-                        )) { row in
+                        ForEach(transcriptRows) { row in
                             SessionItemView(
                                 row: row,
                                 onToggleTool: {
@@ -59,8 +74,10 @@ struct SessionDetailView: View {
                             )
                         }
                         Color.clear
+                            .frame(height: transcriptBottomPadding)
+                        Color.clear
                             .frame(height: 1)
-                            .id(scrollAnchor)
+                            .id(bottomAnchorID)
                             .background {
                                 GeometryReader { proxy in
                                     Color.clear.preference(
@@ -73,6 +90,10 @@ struct SessionDetailView: View {
                     .padding()
                 }
                 .coordinateSpace(name: "sessionTimelineScroll")
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded {
+                    collapseComposer()
+                })
                 .background {
                     GeometryReader { proxy in
                         Color.clear.preference(
@@ -90,21 +111,25 @@ struct SessionDetailView: View {
                 .overlay(alignment: .bottom) {
                     if shouldShowJumpToLatestButton {
                         JumpToLatestButton(action: jumpToLatestMessage)
-                            .padding(.bottom, 14)
+                            .padding(.bottom, jumpButtonBottomPadding)
                             .transition(.scale(scale: 0.9).combined(with: .opacity))
                     }
                 }
                 .animation(.snappy, value: shouldShowJumpToLatestButton)
-                .onChange(of: scrollAnchor) { _, anchor in
+                .onChange(of: scrollToBottomRequest) { _, _ in
                     withAnimation(.snappy) {
-                        proxy.scrollTo(anchor, anchor: .bottom)
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                     }
                 }
                 .onPreferenceChange(TimelineViewportHeightPreferenceKey.self) { height in
+                    guard abs(viewportHeight - height) > 0.5 else { return }
                     viewportHeight = height
+                    updatePinnedState()
                 }
                 .onPreferenceChange(TimelineBottomYPreferenceKey.self) { bottomY in
-                    updatePinnedState(bottomY: bottomY)
+                    guard abs(timelineBottomY - bottomY) > 8 else { return }
+                    timelineBottomY = bottomY
+                    updatePinnedState()
                 }
             }
 
@@ -124,7 +149,9 @@ struct SessionDetailView: View {
                 },
                 onRemoveAttachment: { index in
                     removePendingAttachment(at: index)
-                }
+                },
+                isCompact: isComposerCompact,
+                onExpand: expandComposer
             )
         }
         .navigationTitle("Codex")
@@ -137,13 +164,20 @@ struct SessionDetailView: View {
             }
             let store = SessionStore(protocolClient: protocolClient)
             do {
-                isLoadingHistory = true
-                try await store.open(threadID: threadID)
-                isLoadingHistory = false
+                if isNewThread {
+                    store.openNew(threadID: threadID)
+                } else {
+                    isLoadingHistory = true
+                    try await store.open(threadID: threadID)
+                    isLoadingHistory = false
+                }
                 sessionStore = store
                 updateTimeline(store.visibleItems, source: .initialLoad)
                 listenForSessionEvents(store: store)
-                if timeline.items.isEmpty {
+                if !isNewThread {
+                    startCurrentThreadSyncPolling(store: store)
+                }
+                if timeline.items.isEmpty && !isNewThread {
                     updateTimeline([.assistantMessage("会话暂无可显示历史。")], source: .initialLoad)
                 }
             } catch {
@@ -154,8 +188,12 @@ struct SessionDetailView: View {
         .onDisappear {
             notificationTask?.cancel()
             serverRequestTask?.cancel()
+            liveTimelineRefreshTask?.cancel()
+            syncPollingTask?.cancel()
             notificationTask = nil
             serverRequestTask = nil
+            liveTimelineRefreshTask = nil
+            syncPollingTask = nil
             if let sessionStore {
                 Task {
                     await sessionStore.close()
@@ -188,6 +226,11 @@ struct SessionDetailView: View {
                     appendPendingAttachment(pending)
                 }
                 selectedPhoto = nil
+            }
+        }
+        .onChange(of: foregroundRefreshSignal) { _, _ in
+            Task {
+                await refreshCurrentThreadFromServer(surfaceError: true)
             }
         }
         .alert("会话失败", isPresented: Binding(
@@ -224,6 +267,7 @@ struct SessionDetailView: View {
                     composer.attachments.removeAll()
                     pendingAttachments.removeAll()
                     composer.isRunning = sessionStore.status == .running
+                    collapseComposer()
                 } catch {
                     errorMessage = sessionErrorMessage(for: error)
                 }
@@ -236,10 +280,12 @@ struct SessionDetailView: View {
             composer.attachments.removeAll()
             pendingAttachments.removeAll()
             composer.isRunning = true
+            collapseComposer()
         }
     }
 
     private func appendPendingAttachment(_ pending: PendingAttachment) {
+        expandComposer()
         pendingAttachments.append(pending)
         switch pending.kind {
         case let .image(detail):
@@ -276,6 +322,7 @@ struct SessionDetailView: View {
             do {
                 try await sessionStore.interrupt()
                 composer.isRunning = false
+                refreshTranscriptRows()
             } catch {
                 errorMessage = sessionErrorMessage(for: error)
             }
@@ -283,7 +330,7 @@ struct SessionDetailView: View {
     }
 
     private func loadEarlierHistory() {
-        guard let sessionStore else { return }
+        guard let sessionStore, !isNewThread else { return }
         Task {
             do {
                 try await sessionStore.loadEarlierHistory()
@@ -294,21 +341,69 @@ struct SessionDetailView: View {
         }
     }
 
+    @MainActor
+    private func refreshCurrentThreadFromServer(
+        expectedStore: SessionStore? = nil,
+        surfaceError: Bool
+    ) async {
+        guard let sessionStore else { return }
+        if let expectedStore, sessionStore !== expectedStore {
+            return
+        }
+        guard !isRefreshingCurrentThread else { return }
+        isRefreshingCurrentThread = true
+        let previousItems = sessionStore.visibleItems
+        let previousStatus = sessionStore.status
+        defer {
+            isRefreshingCurrentThread = false
+        }
+        do {
+            try await sessionStore.open(threadID: threadID)
+            if previousItems != sessionStore.visibleItems || previousStatus != sessionStore.status {
+                updateTimeline(sessionStore.visibleItems, source: .liveUpdate)
+            }
+            composer.isRunning = sessionStore.status == .running
+        } catch {
+            if surfaceError {
+                errorMessage = sessionErrorMessage(for: error)
+            }
+        }
+    }
+
     private func jumpToLatestMessage() {
         timeline.userReturnedToBottom()
-        scrollAnchor = UUID()
+        refreshTranscriptRows()
+        scrollToBottomRequest += 1
+    }
+
+    private func expandComposer() {
+        withAnimation(.snappy) {
+            isComposerExpanded = true
+        }
+    }
+
+    private func collapseComposer() {
+        withAnimation(.snappy) {
+            isComposerExpanded = false
+        }
+        dismissKeyboard()
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private func listenForSessionEvents(store: SessionStore) {
         guard let events else { return }
         notificationTask?.cancel()
         serverRequestTask?.cancel()
+        liveTimelineRefreshTask?.cancel()
+        liveTimelineRefreshTask = nil
         notificationTask = Task {
             while let notification = await events.nextNotification() {
                 guard !Task.isCancelled else { return }
                 store.receive(notification: notification)
-                updateTimeline(store.visibleItems, source: .liveUpdate)
-                composer.isRunning = store.status == .running
+                scheduleLiveTimelineRefresh(store: store)
             }
         }
         serverRequestTask = Task {
@@ -317,6 +412,35 @@ struct SessionDetailView: View {
                 if let request = ApprovalRequest(serverRequest: serverRequest) {
                     approvalRequest = request
                 }
+            }
+        }
+    }
+
+    @MainActor
+    private func startCurrentThreadSyncPolling(store: SessionStore) {
+        syncPollingTask?.cancel()
+        syncPollingTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: currentThreadSyncIntervalNanos)
+                guard !Task.isCancelled else { return }
+                await refreshCurrentThreadFromServer(expectedStore: store, surfaceError: false)
+            }
+        }
+    }
+
+    private func scheduleLiveTimelineRefresh(store: SessionStore) {
+        guard liveTimelineRefreshTask == nil else { return }
+        liveTimelineRefreshTask = Task {
+            try? await Task.sleep(nanoseconds: liveTimelineRefreshIntervalNanos)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard sessionStore === store else {
+                    liveTimelineRefreshTask = nil
+                    return
+                }
+                updateTimeline(store.visibleItems, source: .liveUpdate)
+                composer.isRunning = store.status == .running
+                liveTimelineRefreshTask = nil
             }
         }
     }
@@ -331,18 +455,24 @@ struct SessionDetailView: View {
         case .liveUpdate:
             anchor = timeline.applyLiveItems(items)
         }
+        refreshTranscriptRows()
         if anchor == .bottom {
-            scrollAnchor = UUID()
+            scrollToBottomRequest += 1
         }
     }
 
-    private func updatePinnedState(bottomY: CGFloat) {
+    private func updatePinnedState() {
         guard viewportHeight > 0, !timeline.items.isEmpty else { return }
         let threshold: CGFloat = 56
-        if bottomY <= viewportHeight + threshold {
-            timeline.userReturnedToBottom()
+        let bottomDistance = timelineBottomY - viewportHeight
+        let didChange: Bool
+        if bottomDistance <= threshold {
+            didChange = timeline.userReturnedToBottom()
         } else {
-            timeline.userMovedAwayFromBottom()
+            didChange = timeline.userMovedAwayFromBottom()
+        }
+        if didChange {
+            refreshTranscriptRows()
         }
     }
 
@@ -368,6 +498,15 @@ struct SessionDetailView: View {
         } else {
             expandedToolRowIDs.insert(id)
         }
+        refreshTranscriptRows()
+    }
+
+    private func refreshTranscriptRows() {
+        transcriptRows = TranscriptPresentation.rows(
+            for: timeline.items,
+            expandedToolRowIDs: expandedToolRowIDs,
+            status: sessionStore?.status
+        )
     }
 
     private func sessionErrorMessage(for error: Error) -> String {
@@ -377,11 +516,30 @@ struct SessionDetailView: View {
             }
             return "\(method) 请求超过 \(Int(seconds)) 秒未响应。"
         }
+        if case let JSONRPCError.remote(_, message) = error {
+            if message.localizedCaseInsensitiveContains("no rollout found")
+                || message.localizedCaseInsensitiveContains("thread id") {
+                return "远端找不到这个会话。请返回工作区刷新列表后重试，或在该项目中新建会话。"
+            }
+            return "Codex 返回错误：\(message)"
+        }
         return String(describing: error)
     }
 
     private var shouldShowJumpToLatestButton: Bool {
         !timeline.isPinnedToBottom && !timeline.items.isEmpty && !isLoadingHistory
+    }
+
+    private var isComposerCompact: Bool {
+        !isComposerExpanded
+    }
+
+    private var transcriptBottomPadding: CGFloat {
+        isComposerCompact ? 86 : 170
+    }
+
+    private var jumpButtonBottomPadding: CGFloat {
+        isComposerCompact ? 90 : 174
     }
 
     private var approvalBinding: Binding<IdentifiedApprovalRequest?> {

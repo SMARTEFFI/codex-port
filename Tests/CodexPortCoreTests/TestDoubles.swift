@@ -131,6 +131,7 @@ class FakeCodexProtocol: CodexProtocolClient, ThreadDetailProviding, @unchecked 
     var writtenFiles: [(path: String, dataBase64: String)] = []
     var startedThreadID = "thread-started"
     var startedThreadCWD: String?
+    var startedThreadModel: CodexModel?
     var thread: ThreadDetail?
     var resumeThreadResponse: JSONValue?
     var pagedTurnResponses: [JSONValue] = []
@@ -175,18 +176,21 @@ class FakeCodexProtocol: CodexProtocolClient, ThreadDetailProviding, @unchecked 
         return pagedTurnResponses.removeFirst()
     }
 
-    func startThread(cwd: String) async throws -> String {
+    func startThread(cwd: String, model: CodexModel) async throws -> String {
         startedThreadCWD = cwd
+        startedThreadModel = model
         calls.append("thread/start")
         return startedThreadID
     }
 
-    func startTurn(threadID: String, prompt: String, attachments: [TurnAttachment], permissionMode: PermissionMode, collaborationMode: CollaborationMode) async throws -> JSONValue {
+    func startTurn(threadID: String, prompt: String, attachments: [TurnAttachment], model: CodexModel, reasoningEffort: ReasoningEffort, permissionMode: PermissionMode, collaborationMode: CollaborationMode) async throws -> JSONValue {
         calls.append("turn/start")
         lastTurnStart = TurnStartRecord(
             threadID: threadID,
             prompt: prompt,
             attachments: attachments,
+            model: model,
+            reasoningEffort: reasoningEffort,
             permissionMode: permissionMode,
             collaborationMode: collaborationMode
         )
@@ -247,6 +251,8 @@ struct TurnStartRecord: Equatable {
     var threadID: String
     var prompt: String
     var attachments: [TurnAttachment]
+    var model: CodexModel
+    var reasoningEffort: ReasoningEffort
     var permissionMode: PermissionMode
     var collaborationMode: CollaborationMode
 }

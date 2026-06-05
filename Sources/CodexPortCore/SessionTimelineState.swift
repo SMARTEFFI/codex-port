@@ -34,11 +34,20 @@ public struct SessionTimelineState: Equatable, Sendable {
         return .preserve
     }
 
-    public mutating func userMovedAwayFromBottom() {
-        isPinnedToBottom = false
+    @discardableResult
+    public mutating func setPinnedToBottom(_ pinned: Bool) -> Bool {
+        guard isPinnedToBottom != pinned else { return false }
+        isPinnedToBottom = pinned
+        return true
     }
 
-    public mutating func userReturnedToBottom() {
-        isPinnedToBottom = true
+    @discardableResult
+    public mutating func userMovedAwayFromBottom() -> Bool {
+        setPinnedToBottom(false)
+    }
+
+    @discardableResult
+    public mutating func userReturnedToBottom() -> Bool {
+        setPinnedToBottom(true)
     }
 }

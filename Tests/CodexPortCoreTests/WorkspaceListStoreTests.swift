@@ -158,6 +158,60 @@ import Testing
     #expect(group.hiddenThreadCount == 2)
 }
 
+@Test func workspaceListStoreCanOptimisticallyPublishNewLocalThreadBeforeRemoteListCatchesUp() async throws {
+    let transport = RecordingCodexTransport()
+    transport.stubbedResponses["thread/list"] = .object([
+        "threads": .array([
+            .object([
+                "id": .string("existing-thread"),
+                "cwd": .string("/repo/app"),
+                "updatedAt": .number(1_800_000_000),
+                "preview": .string("Existing")
+            ])
+        ])
+    ])
+    let store = WorkspaceListStore(
+        protocolClient: CodexProtocolFacade(transport: transport),
+        readStateStore: InMemoryWorkspaceReadStateStore(),
+        now: { Date(timeIntervalSince1970: 1_800_000_100) }
+    )
+
+    try await store.reload(limit: 50)
+    store.upsertLocalThread(id: "new-thread", cwd: "/repo/app", preview: "新会话")
+
+    #expect(store.recentThreads.map(\.id) == ["new-thread", "existing-thread"])
+    #expect(store.projects.first?.cwd == "/repo/app")
+    #expect(store.projects.first?.sessionCount == 2)
+    #expect(store.projectThreadGroups.first?.threads.first?.id == "new-thread")
+    #expect(store.dayThreadGroups.first?.threads.first?.id == "new-thread")
+
+    try await store.reload(limit: 50)
+
+    #expect(store.recentThreads.map(\.id) == ["new-thread", "existing-thread"])
+
+    transport.stubbedResponses["thread/list"] = .object([
+        "threads": .array([
+            .object([
+                "id": .string("new-thread"),
+                "cwd": .string("/repo/app"),
+                "updatedAt": .number(1_800_000_200),
+                "preview": .string("Remote caught up")
+            ]),
+            .object([
+                "id": .string("existing-thread"),
+                "cwd": .string("/repo/app"),
+                "updatedAt": .number(1_800_000_000),
+                "preview": .string("Existing")
+            ])
+        ])
+    ])
+
+    try await store.reload(limit: 50)
+
+    #expect(store.recentThreads.map(\.id) == ["new-thread", "existing-thread"])
+    #expect(store.recentThreads.first?.preview == "Remote caught up")
+}
+
 @Test func workspaceListStoreTreatsFirstRemoteLoadAsReadBaselineThenMarksLaterUpdatesUnread() async throws {
     let transport = RecordingCodexTransport()
     transport.stubbedResponses["thread/list"] = .object([

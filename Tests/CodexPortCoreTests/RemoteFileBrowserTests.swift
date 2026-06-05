@@ -21,6 +21,7 @@ import Testing
     #expect(threadID == "thread-new")
     #expect(protocolClient.createdDirectories == [CreatedDirectory(path: "/home/codex/Projects/new-app", recursive: true)])
     #expect(protocolClient.startedThreadCWD == "/home/codex/Projects/new-app")
+    #expect(protocolClient.startedThreadModel == .gpt55)
 }
 
 @Test func remoteFileBrowserRejectsFilesAsThreadCwd() async throws {

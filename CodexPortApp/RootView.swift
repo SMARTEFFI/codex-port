@@ -6,6 +6,7 @@ struct RootView: View {
     @State private var store: PersistentHostProfileStore?
     @State private var profiles: [CodexPortCore.HostProfile] = []
     @State private var loadError: String?
+    @State private var foregroundRefreshSignal = 0
     @StateObject private var connection: AppConnectionState
     @Environment(\.scenePhase) private var scenePhase
 
@@ -120,14 +121,15 @@ struct RootView: View {
                         projectThreadGroups: connection.projectThreadGroups,
                         dayThreadGroups: connection.dayThreadGroups,
                         recentThreads: connection.recentThreads,
+                        startingThreadCWDs: connection.startingThreadCWDs,
                         onOpenSession: { thread in
                             connection.markThreadRead(thread.id)
-                            path.append(AppRoute.session(thread.id))
+                            path.append(AppRoute.session(thread.id, isNew: false))
                         },
                         onStartProjectSession: { project in
                             Task {
                                 if let threadID = await connection.startThread(cwd: project.cwd) {
-                                    path.append(AppRoute.session(threadID))
+                                    path.append(AppRoute.session(threadID, isNew: true))
                                 }
                             }
                         },
@@ -146,6 +148,14 @@ struct RootView: View {
                     .refreshable {
                         await connection.reloadWorkspaces()
                     }
+                    .onAppear {
+                        Task {
+                            await connection.reloadWorkspaces()
+                        }
+                    }
+                    .task {
+                        await connection.reloadWorkspaces()
+                    }
                 case .remoteBrowser:
                     RemoteFileBrowserView(
                         store: connection.remoteBrowserStore,
@@ -154,16 +164,18 @@ struct RootView: View {
                         onSelectWorkspace: { cwd in
                             Task {
                                 if let threadID = await connection.startThread(cwd: cwd) {
-                                    path.append(AppRoute.session(threadID))
+                                    path.append(AppRoute.session(threadID, isNew: true))
                                 }
                             }
                         }
                     )
-                case let .session(threadID):
+                case let .session(threadID, isNew):
                     SessionDetailView(
                         threadID: threadID,
+                        isNewThread: isNew,
                         protocolClient: connection.session?.protocolClient,
-                        events: connection.session?.events
+                        events: connection.session?.events,
+                        foregroundRefreshSignal: foregroundRefreshSignal
                     )
                 case .diagnostics:
                     DiagnosticsView(
@@ -180,6 +192,7 @@ struct RootView: View {
             }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
+                foregroundRefreshSignal += 1
                 Task {
                     await connection.reloadWorkspaces()
                 }
@@ -271,7 +284,7 @@ enum AppRoute: Hashable {
     case editHostProfile(UUID)
     case workspaces
     case remoteBrowser
-    case session(String)
+    case session(String, isNew: Bool)
     case diagnostics
 }
 

@@ -7,6 +7,7 @@ struct WorkspaceListView: View {
     let projectThreadGroups: [WorkspaceProjectThreadGroup]
     let dayThreadGroups: [WorkspaceDayThreadGroup]
     let recentThreads: [ThreadSummary]
+    let startingThreadCWDs: Set<String>
     let onOpenSession: (ThreadSummary) -> Void
     let onStartProjectSession: (WorkspaceProject) -> Void
     let onBrowseWorkspace: () -> Void
@@ -26,6 +27,7 @@ struct WorkspaceListView: View {
         projectThreadGroups: [WorkspaceProjectThreadGroup] = [],
         dayThreadGroups: [WorkspaceDayThreadGroup] = [],
         recentThreads: [ThreadSummary],
+        startingThreadCWDs: Set<String> = [],
         onOpenSession: @escaping (ThreadSummary) -> Void,
         onStartProjectSession: @escaping (WorkspaceProject) -> Void,
         onBrowseWorkspace: @escaping () -> Void
@@ -35,6 +37,7 @@ struct WorkspaceListView: View {
         self.projectThreadGroups = projectThreadGroups
         self.dayThreadGroups = dayThreadGroups
         self.recentThreads = recentThreads
+        self.startingThreadCWDs = startingThreadCWDs
         self.onOpenSession = onOpenSession
         self.onStartProjectSession = onStartProjectSession
         self.onBrowseWorkspace = onBrowseWorkspace
@@ -77,6 +80,7 @@ struct WorkspaceListView: View {
                             WorkspaceProjectHeader(
                                 project: group.project,
                                 isCollapsed: isCollapsed(group),
+                                isStartingSession: startingThreadCWDs.contains(group.project.cwd),
                                 onToggleCollapse: {
                                     toggleProjectCollapse(group.id)
                                 },
@@ -333,6 +337,7 @@ struct WorkspaceListView: View {
 private struct WorkspaceProjectHeader: View {
     let project: WorkspaceProject
     let isCollapsed: Bool
+    let isStartingSession: Bool
     let onToggleCollapse: () -> Void
     let onStartSession: () -> Void
 
@@ -351,6 +356,7 @@ private struct WorkspaceProjectHeader: View {
             onToggleCollapse: onToggleCollapse,
             trailingActionSystemImage: "square.and.pencil",
             trailingActionAccessibilityLabel: "在 \(projectName) 新建会话",
+            isTrailingActionInProgress: isStartingSession,
             onTrailingAction: onStartSession
         )
     }
@@ -378,6 +384,7 @@ private struct WorkspaceGroupHeader: View {
     let onToggleCollapse: () -> Void
     var trailingActionSystemImage: String?
     var trailingActionAccessibilityLabel: String?
+    var isTrailingActionInProgress = false
     var onTrailingAction: (() -> Void)?
 
     var body: some View {
@@ -393,14 +400,23 @@ private struct WorkspaceGroupHeader: View {
 
             if let trailingActionSystemImage, let onTrailingAction {
                 Button(action: onTrailingAction) {
-                    Image(systemName: trailingActionSystemImage)
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Circle())
+                    Group {
+                        if isTrailingActionInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: trailingActionSystemImage)
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .disabled(isTrailingActionInProgress)
                 .accessibilityLabel(trailingActionAccessibilityLabel ?? "新建会话")
+                .accessibilityValue(isTrailingActionInProgress ? "正在创建" : "")
             }
         }
         .padding(.top, 12)
