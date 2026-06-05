@@ -1,17 +1,17 @@
 # Triage Labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+skills 会使用五种标准 triage roles。此文件把这些 roles 映射到本仓库 issue tracker 实际使用的 label 字符串。
 
-Artifact prose should be Chinese by default, but the canonical role names and tracker label strings in this table must remain unchanged unless the project deliberately renames labels. See `docs/agents/output-language.md`.
+artifact 正文默认使用中文，但表格中的 canonical role names 和 tracker label strings 必须保持不变，除非项目明确重命名 labels。参见 `docs/agents/output-language.md`。
 
 | Label in mattpocock/skills | Label in our tracker | Meaning                                  |
 | -------------------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| `needs-triage`             | `needs-triage`       | 维护者需要评估此 issue                   |
+| `needs-info`               | `needs-info`         | 等待报告者提供更多信息                   |
+| `ready-for-agent`          | `ready-for-agent`    | 规格已完整，可交给 AFK agent             |
+| `ready-for-human`          | `ready-for-human`    | 需要人工实现或判断                       |
+| `wontfix`                  | `wontfix`            | 不会处理                                 |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
+当 skill 提到某个 role（例如 "apply the AFK-ready triage label"）时，使用此表中对应的 label string。
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+如果实际 tracker 使用了不同词汇，只修改右侧列以匹配真实 label。

@@ -1,35 +1,35 @@
-# ADR 0001: SSH driver dependency
+# ADR 0001: SSH driver 依赖
 
 ## Status
 
-Accepted and implemented for the MVP baseline.
+已接受，并已在 MVP baseline 中实现。
 
 ## Context
 
-The iOS client must connect to Mac/VPS/Linux hosts over SSH, run `codex app-server --listen stdio://`, and expose stdin/stdout as the transport for app-server JSON-RPC. The app intentionally avoids `daemon start`, `daemon restart`, `daemon stop`, and `app-server proxy` for this connection path so a normal connect attempt does not mutate or depend on the shared app-server daemon/control socket state. The code keeps a tested `SSHDriver` boundary, fake driver, and a production SwiftNIO-backed implementation.
+iOS client 必须通过 SSH 连接 Mac/VPS/Linux hosts，运行 `codex app-server --listen stdio://`，并把 stdin/stdout 暴露为 app-server JSON-RPC 的 transport。此连接路径刻意避开 `daemon start`、`daemon restart`、`daemon stop` 和 `app-server proxy`，这样一次普通连接尝试不会修改或依赖共享的 app-server daemon/control socket 状态。代码保留了经过测试的 `SSHDriver` 边界、fake driver，以及基于 SwiftNIO 的 production implementation。
 
 ## Decision
 
-Use Apple `swift-nio-ssh` as the primary production SSH implementation behind the existing `SSHDriver` interface.
+在现有 `SSHDriver` interface 后面，使用 Apple `swift-nio-ssh` 作为主要 production SSH implementation。
 
-The package products are:
+package products 如下：
 
-- `NIOSSH` from `https://github.com/apple/swift-nio-ssh.git`
-- `NIOCore` from `https://github.com/apple/swift-nio.git`
-- `NIOPosix` from `https://github.com/apple/swift-nio.git`
-- `Crypto` from `https://github.com/apple/swift-crypto.git`
+- `NIOSSH` 来自 `https://github.com/apple/swift-nio-ssh.git`
+- `NIOCore` 来自 `https://github.com/apple/swift-nio.git`
+- `NIOPosix` 来自 `https://github.com/apple/swift-nio.git`
+- `Crypto` 来自 `https://github.com/apple/swift-crypto.git`
 
-The driver should execute commands over an SSH session channel without PTY, route `.channel` data to stdout, route `.stdErr` data to stderr/diagnostics, and write stdin as `SSHChannelData(type: .channel, ...)`.
+driver 应通过不带 PTY 的 SSH session channel 执行命令，将 `.channel` data 路由到 stdout，将 `.stdErr` data 路由到 stderr/diagnostics，并以 `SSHChannelData(type: .channel, ...)` 写入 stdin。
 
-The production client uses `ClientBootstrap` from `NIOPosix`. `NIOTSConnectionBootstrap` was tested against OpenSSH 9.9 and closed the transport before the host key validation callback, which prevented first-connect trust prompts from appearing.
+production client 使用 `NIOPosix` 的 `ClientBootstrap`。`NIOTSConnectionBootstrap` 曾用 OpenSSH 9.9 测试，但它会在 host key validation callback 之前关闭 transport，导致首次连接的信任确认无法出现。
 
 ## Consequences
 
-- The project keeps a deep `SSHDriver` interface while the SwiftNIO-specific code stays isolated in `NIOSSHDriver.swift`.
-- JSON-RPC transport must not assume one stdout read equals one JSON message. `JSONRPCFramer` now handles newline-delimited split/coalesced messages.
-- Host key trust must persist across launches. `FileKnownHostStore` and `PersistentKnownHostVerifier` now cover that requirement.
-- Password auth and unencrypted OpenSSH Ed25519 private key auth are supported for the MVP. Encrypted keys and broader key formats remain future work.
+- 项目保留 deep `SSHDriver` interface，SwiftNIO-specific code 隔离在 `NIOSSHDriver.swift`。
+- JSON-RPC transport 不能假设一次 stdout read 就等于一条 JSON message。`JSONRPCFramer` 现在处理 newline-delimited 的 split/coalesced messages。
+- Host key trust 必须跨启动持久化。`FileKnownHostStore` 和 `PersistentKnownHostVerifier` 已覆盖该要求。
+- MVP 支持 password auth 和未加密的 OpenSSH Ed25519 private key auth。Encrypted keys 和更广泛的 key formats 作为后续工作。
 
 ## Notes
 
-SwiftPM dependency resolution succeeded after the earlier local cache/network instability. `swift test` and the iOS Simulator build now include the production SSH driver dependencies.
+早前本地 cache/network 不稳定之后，SwiftPM dependency resolution 已成功。`swift test` 和 iOS Simulator build 现在都包含 production SSH driver dependencies。

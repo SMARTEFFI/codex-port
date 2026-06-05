@@ -1,20 +1,20 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+engineering skills 在探索代码库时，应按此说明读取本仓库的领域文档。
 
-When these docs inform generated artifacts, write prose in Chinese by default while preserving domain terms, file names, code identifiers, ADR IDs, labels, and workflow terms exactly where needed. See `docs/agents/output-language.md`.
+当这些文档影响生成的 artifacts 时，正文默认使用中文；必要时原样保留 domain terms、文件名、code identifiers、ADR IDs、labels 和 workflow terms。参见 `docs/agents/output-language.md`。
 
 ## Before exploring, read these
 
-- **`CONTEXT.md`** at the repo root, or
-- **`CONTEXT-MAP.md`** at the repo root if it exists — it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`** — read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+- 仓库根目录下的 **`CONTEXT.md`**，或者
+- 如果根目录存在 **`CONTEXT-MAP.md`**，则读取它指向的每个 context 对应的 `CONTEXT.md`。只读取与当前主题相关的内容。
+- **`docs/adr/`**：读取与即将处理区域相关的 ADRs。在 multi-context repos 中，也检查 `src/<context>/docs/adr/` 中的 context-scoped decisions。
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The producer skill (`/grill-with-docs`) creates them lazily when terms or decisions actually get resolved.
+如果这些文件不存在，**静默继续**。不要报告缺失，也不要预先建议创建。producer skill（`/grill-with-docs`）会在术语或决策真正被明确时再懒创建。
 
 ## File structure
 
-Single-context repo (most repos):
+Single-context repo（大多数仓库）：
 
 ```
 /
@@ -25,7 +25,7 @@ Single-context repo (most repos):
 └── src/
 ```
 
-Multi-context repo (presence of `CONTEXT-MAP.md` at the root):
+Multi-context repo（根目录存在 `CONTEXT-MAP.md`）：
 
 ```
 /
@@ -42,12 +42,12 @@ Multi-context repo (presence of `CONTEXT-MAP.md` at the root):
 
 ## Use the glossary's vocabulary
 
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
+当输出中命名领域概念时（例如 issue title、refactor proposal、hypothesis、test name），使用 `CONTEXT.md` 中定义的术语。不要漂移到 glossary 明确避免的同义词。
 
-If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/grill-with-docs`).
+如果你需要的概念尚未出现在 glossary 中，这是一个信号：要么你正在发明项目并不使用的语言（需要重新考虑），要么确实存在术语缺口（记录给 `/grill-with-docs`）。
 
 ## Flag ADR conflicts
 
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
+如果输出与已有 ADR 冲突，应明确指出，而不是静默覆盖：
 
 > _Contradicts ADR-0007 (event-sourced orders) — but worth reopening because…_
