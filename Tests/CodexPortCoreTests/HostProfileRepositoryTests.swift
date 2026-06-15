@@ -137,8 +137,15 @@ import Testing
     #expect(!rawJSON.contains("secret-password"))
     #expect(!rawJSON.contains("private-key"))
     #expect(!rawJSON.contains("bearer-token"))
-    #expect(try repository.load() == [profile])
-    #expect(try repository.load().first?.connectionMethod.relayHost?.relayEndpointURL == URL(string: "wss://relay.example.test/v0/streams")!)
+    let loaded = try repository.load().first
+    #expect(loaded?.id == profile.id)
+    #expect(loaded?.name == profile.name)
+    #expect(loaded?.connectionMethod.relayHost?.pairingRecordID == "pairing-record")
+    #expect(loaded?.connectionMethod.relayHost?.relayEndpointURL == URL(string: "wss://relay.example.test/v0/streams")!)
+    #expect(loaded?.connectionMethod.relayHost?.readiness == .failed(
+        reason: .threadListTimeout,
+        message: "上次读取会话未完成，点按重试"
+    ))
 }
 
 @Test func persistentHostProfileStorePersistsRelayHostReadinessUpdates() throws {
@@ -173,6 +180,44 @@ import Testing
 
     #expect(updated.connectionMethod.relayHost?.readiness == .ready(loadedThreadCount: 4))
     #expect(reloaded.list().first?.connectionMethod.relayHost?.readiness == .ready(loadedThreadCount: 4))
+}
+
+@Test func fileHostProfileRepositoryDoesNotRestoreStaleRelayLoadingReadinessAfterRelaunch() throws {
+    let directory = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString)
+    let url = directory.appending(path: "profiles.json")
+    let repository = FileHostProfileRepository(fileURL: url)
+    let profile = HostProfile(
+        id: UUID(uuidString: "99999999-2222-3333-4444-555555555555")!,
+        connectionMethod: .relay(
+            RelayHost(
+                hostAgentID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                displayName: "Mac Studio Agent",
+                userName: "chenm",
+                pairingRecordID: "pairing-record",
+                presence: .online(activeConnectionCount: 1),
+                readiness: .loading(stage: .threadList),
+                diagnosticsSummary: "Host Agent online"
+            )
+        ),
+        name: "Mac Studio Relay",
+        host: "mac-studio.local",
+        port: 22,
+        username: "chenm",
+        auth: .none,
+        codexPath: "codex",
+        startupCommand: "",
+        defaultDirectory: "~/Projects",
+        knownHostFingerprint: nil
+    )
+
+    try repository.save([profile])
+
+    let reloaded = try FileHostProfileRepository(fileURL: url).load()
+
+    #expect(reloaded.first?.connectionMethod.relayHost?.readiness == .failed(
+        reason: .threadListTimeout,
+        message: "上次读取会话未完成，点按重试"
+    ))
 }
 
 @Test func persistentHostProfileStoreSeedsRelayHostOnlyOnceForAFKVerification() throws {

@@ -375,8 +375,11 @@ private enum StoredRelayHostReadiness: Codable {
         switch self {
         case let .offline(lastSeenAt):
             return .offline(lastSeenAt: lastSeenAt)
-        case let .loading(stage):
-            return .loading(stage: stage)
+        case .loading:
+            return .failed(
+                reason: .threadListTimeout,
+                message: "上次读取会话未完成，点按重试"
+            )
         case let .ready(loadedThreadCount):
             return .ready(loadedThreadCount: loadedThreadCount)
         case let .failed(reason, message):

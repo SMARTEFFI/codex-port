@@ -79,7 +79,8 @@ import Testing
         title: "Mac Studio Relay",
         subtitle: "Mac: Mac Studio Relay · chenm",
         statusText: "读取会话中...",
-        statusKind: .loading
+        statusKind: .loading,
+        canOpenWorkspaces: true
     ))
     #expect(HostProfileRowPresentation(profile: ready) == HostProfileRowPresentation(
         title: "Mac Studio Relay",
@@ -91,7 +92,8 @@ import Testing
         title: "Mac Studio Relay",
         subtitle: "Mac: Mac Studio Relay · chenm",
         statusText: "离线 · 最后在线 1970-01-01 00:01:40Z",
-        statusKind: .offline
+        statusKind: .offline,
+        canOpenWorkspaces: true
     ))
 }
 
@@ -122,7 +124,7 @@ import Testing
 
     #expect(HostProfileRowPresentation(profile: profile).statusText == "读取会话列表超时")
     #expect(HostProfileRowPresentation(profile: profile).statusKind == .failed)
-    #expect(HostProfileRowPresentation(profile: profile).canOpenWorkspaces == false)
+    #expect(HostProfileRowPresentation(profile: profile).canOpenWorkspaces)
 }
 
 @Test func directSSHRowPresentationKeepsExistingTrustStatus() {

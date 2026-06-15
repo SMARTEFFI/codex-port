@@ -54,7 +54,7 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
             case let .loading(stage):
                 statusText = Self.loadingStatusText(for: stage)
                 statusKind = .loading
-                canOpenWorkspaces = false
+                canOpenWorkspaces = true
             case let .offline(lastSeenAt):
                 if let lastSeenAt {
                     statusText = "离线 · 最后在线 \(Self.utcTimestamp(lastSeenAt))"
@@ -62,11 +62,11 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
                     statusText = "离线"
                 }
                 statusKind = .offline
-                canOpenWorkspaces = false
+                canOpenWorkspaces = true
             case let .failed(_, message):
                 statusText = message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "连接失败" : message
                 statusKind = .failed
-                canOpenWorkspaces = false
+                canOpenWorkspaces = true
             }
         }
     }
