@@ -310,9 +310,30 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         case "commandOutput", "command_output", "commandExecutionOutput":
             return text.map(RelayThreadHistoryItem.commandOutput)
         case "commandExecution":
-            return (object["aggregatedOutput"] as? String ?? object["output"] as? String ?? text).map(RelayThreadHistoryItem.commandOutput)
+            let output = object["aggregatedOutput"] as? String
+                ?? object["aggregated_output"] as? String
+                ?? object["output"] as? String
+                ?? text
+                ?? ""
+            guard let command = commandLine(from: object) else {
+                return output.isEmpty ? nil : .commandOutput(output)
+            }
+            return .commandOutput(prependingCommand(command, to: output))
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall":
-            return commandOutputText(from: object["result"]).map(RelayThreadHistoryItem.commandOutput)
+            let output = commandOutputText(from: object["result"])
+            let label = object["name"] as? String
+                ?? object["toolName"] as? String
+                ?? object["tool_name"] as? String
+                ?? object["title"] as? String
+            if let label,
+               let path = readFilePath(from: object, label: label),
+               let output {
+                return .commandOutput(prependingReadFile(path, to: output))
+            }
+            if let label, let output {
+                return .commandOutput(prependingToolLabel(label, to: output))
+            }
+            return output.map(RelayThreadHistoryItem.commandOutput)
         case "fileChange", "file_change", "diff":
             if let changes = object["changes"] as? [[String: Any]],
                let first = changes.first {
@@ -352,6 +373,115 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
             return String(decoding: data, as: UTF8.self)
         }
         return nil
+    }
+
+    private static func commandLine(from object: [String: Any]) -> String? {
+        for key in ["command", "cmd"] {
+            if let command = commandLine(from: object[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: object[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandLine(from value: Any?) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let array = value as? [String] {
+            let command = array.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        if let array = value as? [Any] {
+            let command = array.compactMap { $0 as? String }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        guard let object = value as? [String: Any] else { return nil }
+        for key in ["text", "command", "cmd", "shell"] {
+            if let command = commandLine(from: object[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: object[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandLine(fromArgumentArray value: Any?) -> String? {
+        if let array = value as? [String] {
+            let command = array.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        if let array = value as? [Any] {
+            let command = array.compactMap { $0 as? String }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        return nil
+    }
+
+    private static func readFilePath(from object: [String: Any], label: String) -> String? {
+        let normalizedLabel = label.lowercased()
+        guard normalizedLabel.contains("read") || normalizedLabel.contains("file") else {
+            return nil
+        }
+        for key in ["path", "file", "filePath", "file_path"] {
+            if let path = nonEmptyString(object[key]) {
+                return lastPathComponent(path)
+            }
+        }
+        for key in ["arguments", "args", "input"] {
+            if let path = readFilePath(from: object[key]) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private static func readFilePath(from value: Any?) -> String? {
+        if let string = nonEmptyString(value) {
+            return lastPathComponent(string)
+        }
+        guard let object = value as? [String: Any] else { return nil }
+        for key in ["path", "file", "filePath", "file_path"] {
+            if let path = nonEmptyString(object[key]) {
+                return lastPathComponent(path)
+            }
+        }
+        return nil
+    }
+
+    private static func nonEmptyString(_ value: Any?) -> String? {
+        let trimmed = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private static func lastPathComponent(_ path: String) -> String {
+        (path as NSString).lastPathComponent.isEmpty ? path : (path as NSString).lastPathComponent
+    }
+
+    private static func prependingCommand(_ command: String, to output: String) -> String {
+        let prefix = "$ \(command)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
+    }
+
+    private static func prependingReadFile(_ path: String, to output: String) -> String {
+        let prefix = "读取文件：\(path)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
+    }
+
+    private static func prependingToolLabel(_ label: String, to output: String) -> String {
+        let prefix = "工具调用：\(label)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
     }
 
     private static func cappedHistoryItems(_ items: [RelayThreadHistoryItem]) -> [RelayThreadHistoryItem] {

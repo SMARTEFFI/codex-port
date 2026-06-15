@@ -122,7 +122,7 @@ import Testing
     #expect(store.visibleItems == [
         .userMessage("请继续修复同步问题"),
         .assistantMessage("我会检查事件流。"),
-        .commandOutput("Test run passed\n"),
+        .commandOutput("$ swift test\nTest run passed\n"),
         .fileChange(path: "Sources/CodexPortCore/SessionStore.swift", diff: "+ parse official items")
     ])
 }

@@ -814,8 +814,9 @@ private struct SessionItemView: View {
                             .frame(width: 18)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(row.title ?? "工具调用")
-                                .font(.caption.weight(.semibold))
+                                .font(.callout.weight(.medium))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                             if let summary = row.summary {
                                 Text(summary)
                                     .font(.caption)
@@ -1535,7 +1536,7 @@ private extension TranscriptCodeLanguage {
         case .javascript:
             return "JAVASCRIPT"
         case .shell:
-            return "BASH"
+            return "Shell"
         case .json:
             return "JSON"
         case .markdown:

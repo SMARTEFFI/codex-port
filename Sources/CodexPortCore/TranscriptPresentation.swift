@@ -95,16 +95,17 @@ public enum TranscriptPresentation {
             case let .commandOutput(text):
                 let id = "\(index)-command"
                 let isExpanded = expandedToolRowIDs.contains(id)
+                let tool = commandToolPresentation(from: text)
                 return TranscriptRow(
                     id: id,
                     kind: .toolOutput,
-                    body: isExpanded ? text : "",
-                    title: "运行命令",
-                    summary: firstNonEmptyLine(in: text) ?? "命令输出",
-                    systemImage: "terminal",
+                    body: isExpanded ? tool.body : "",
+                    title: tool.title,
+                    summary: nil,
+                    systemImage: tool.systemImage,
                     isCollapsed: !isExpanded,
-                    blocks: isExpanded ? [.code(language: .shell, text: text)] : [],
-                    copyPayload: text
+                    blocks: isExpanded ? tool.blocks : [],
+                    copyPayload: tool.copyPayload
                 )
             case let .fileChange(path, diff):
                 let id = "\(index)-file"
@@ -150,6 +151,163 @@ public enum TranscriptPresentation {
             .first { !$0.isEmpty }
     }
 
+    private static func firstActionLine(in text: String) -> String? {
+        text
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty && $0 != "---" }
+    }
+
+    private static func commandToolPresentation(from text: String) -> CommandToolPresentation {
+        let stripped = strippingLeadingToolMarkers(from: text)
+        let body = stripped.text
+        if let readFile = readFilePresentation(from: body) {
+            return readFile
+        }
+        let latestLabel = stripped.labels.last
+        if let command = shellCommandLine(in: body, allowBareFirstLine: latestLabel.map(isCommandExecutionLabel) ?? true) {
+            return CommandToolPresentation(
+                title: "已运行 \(command)",
+                body: body,
+                systemImage: "terminal",
+                blocks: body.isEmpty ? [] : [.code(language: .shell, text: body)],
+                copyPayload: body
+            )
+        }
+        if let label = latestLabel, !label.isEmpty {
+            let fallbackTitle = isCommandExecutionLabel(label) ? "已运行命令" : "已调用 \(label)"
+            return CommandToolPresentation(
+                title: fallbackTitle,
+                body: body,
+                systemImage: isCommandExecutionLabel(label) ? "terminal" : "wrench.and.screwdriver",
+                blocks: body.isEmpty ? [] : [.code(language: .shell, text: body)],
+                copyPayload: body.isEmpty ? text : body
+            )
+        }
+        let firstLine = firstActionLine(in: body)
+        return CommandToolPresentation(
+            title: firstLine.map { "已运行 \($0)" } ?? "已运行命令",
+            body: body,
+            systemImage: "terminal",
+            blocks: body.isEmpty ? [] : [.code(language: .shell, text: body)],
+            copyPayload: body
+        )
+    }
+
+    private static func readFilePresentation(from text: String) -> CommandToolPresentation? {
+        let first = firstLineAndRest(in: text)
+        if let path = readFilePath(fromMarkerLine: first.line) {
+            let body = first.rest
+            let language = codeLanguage(forPath: path)
+            return CommandToolPresentation(
+                title: "已读取 \(path)",
+                body: body,
+                systemImage: "doc.text",
+                blocks: body.isEmpty ? [] : [.code(language: language, text: body)],
+                copyPayload: body.isEmpty ? text : body
+            )
+        }
+        guard looksLikeSkillMarkdown(text) else { return nil }
+        return CommandToolPresentation(
+            title: "已读取 SKILL.md",
+            body: text,
+            systemImage: "doc.text",
+            blocks: [.code(language: .markdown, text: text)],
+            copyPayload: text
+        )
+    }
+
+    private static func readFilePath(fromMarkerLine line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["读取文件：", "读取文件:", "已读取 "] {
+            if trimmed.hasPrefix(prefix) {
+                let path = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return path.isEmpty ? nil : path
+            }
+        }
+        return nil
+    }
+
+    private static func shellCommandLine(in text: String, allowBareFirstLine: Bool) -> String? {
+        guard let line = firstActionLine(in: text) else { return nil }
+        if line.hasPrefix("$ ") {
+            let command = String(line.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        if line.hasPrefix("$") {
+            let command = String(line.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        guard allowBareFirstLine else { return nil }
+        return line
+    }
+
+    private static func strippingLeadingToolMarkers(from text: String) -> (text: String, labels: [String]) {
+        var remainder = text
+        var labels: [String] = []
+        while true {
+            let first = firstLineAndRest(in: remainder)
+            let line = first.line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let label = toolInvocationLabel(from: line) else {
+                return (remainder, labels)
+            }
+            labels.append(label)
+            remainder = first.rest
+        }
+    }
+
+    private static func toolInvocationLabel(from line: String) -> String? {
+        for prefix in ["开始工具调用：", "开始工具调用:", "工具调用：", "工具调用:"] {
+            if line.hasPrefix(prefix) {
+                let label = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return label.isEmpty ? nil : label
+            }
+        }
+        return nil
+    }
+
+    private static func isCommandExecutionLabel(_ label: String) -> Bool {
+        let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "commandexecution" || normalized == "command_execution" || normalized == "exec"
+    }
+
+    private static func firstLineAndRest(in text: String) -> (line: String, rest: String) {
+        guard let newline = text.firstIndex(where: \.isNewline) else {
+            return (text, "")
+        }
+        let restStart = text.index(after: newline)
+        return (String(text[..<newline]), String(text[restStart...]))
+    }
+
+    private static func codeLanguage(forPath path: String) -> TranscriptCodeLanguage {
+        let ext = ((path as NSString).pathExtension).lowercased()
+        switch ext {
+        case "swift":
+            return .swift
+        case "ts", "tsx":
+            return .typescript
+        case "js", "jsx":
+            return .javascript
+        case "sh", "bash", "zsh":
+            return .shell
+        case "json":
+            return .json
+        case "md", "markdown":
+            return .markdown
+        default:
+            return .plainText
+        }
+    }
+
+    private static func looksLikeSkillMarkdown(_ text: String) -> Bool {
+        let prefix = String(text.prefix(2_000))
+        return prefix.hasPrefix("---\n")
+            && prefix.contains("\nname:")
+            && prefix.contains("\ndescription:")
+            && prefix.contains("\n# ")
+            && prefix.lowercased().contains("skill")
+    }
+
     private static func workingBody(for items: [VisibleItem], status: TurnStatus?) -> String? {
         guard status == .running else { return nil }
         guard let latestItem = items.last else { return nil }
@@ -162,6 +320,14 @@ public enum TranscriptPresentation {
             return "正在回复..."
         }
     }
+}
+
+private struct CommandToolPresentation {
+    var title: String
+    var body: String
+    var systemImage: String
+    var blocks: [TranscriptBlock]
+    var copyPayload: String
 }
 
 public enum TranscriptCodeLanguage: Equatable, Sendable {

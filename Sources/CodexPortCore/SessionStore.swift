@@ -567,9 +567,42 @@ public final class SessionStore {
 
     private func mergeCommand(_ item: VisibleItem, _ delta: String) -> VisibleItem {
         if case let .commandOutput(text) = item {
-            return .commandOutput(text + delta)
+            return .commandOutput(text + deduplicatingToolHeader(delta, after: text))
         }
         return item
+    }
+
+    private func deduplicatingToolHeader(_ delta: String, after existing: String) -> String {
+        let existingFirstLine = firstLine(in: existing)
+        let deltaFirst = firstLineAndRest(in: delta)
+        guard isToolHeaderLine(existingFirstLine),
+              existingFirstLine == deltaFirst.line
+        else {
+            return delta
+        }
+        return deltaFirst.rest
+    }
+
+    private func firstLine(in text: String) -> String {
+        guard let newline = text.firstIndex(where: \.isNewline) else { return text }
+        return String(text[..<newline])
+    }
+
+    private func firstLineAndRest(in text: String) -> (line: String, rest: String) {
+        guard let newline = text.firstIndex(where: \.isNewline) else { return (text, "") }
+        let restStart = text.index(after: newline)
+        return (String(text[..<newline]), String(text[restStart...]))
+    }
+
+    private func isToolHeaderLine(_ line: String) -> Bool {
+        line.hasPrefix("$ ")
+            || line.hasPrefix("读取文件：")
+            || line.hasPrefix("读取文件:")
+            || line.hasPrefix("已读取 ")
+            || line.hasPrefix("工具调用：")
+            || line.hasPrefix("工具调用:")
+            || line.hasPrefix("开始工具调用：")
+            || line.hasPrefix("开始工具调用:")
     }
 }
 
@@ -669,8 +702,17 @@ extension VisibleItem {
             guard let text else { return nil }
             self = .commandOutput(text)
         case "commandExecution":
-            guard let output = object["aggregatedOutput"]?.string ?? object["output"]?.string else { return nil }
-            self = .commandOutput(output)
+            let output = object["aggregatedOutput"]?.string
+                ?? object["aggregated_output"]?.string
+                ?? object["output"]?.string
+                ?? text
+                ?? ""
+            guard let command = Self.commandLine(from: object) else {
+                guard !output.isEmpty else { return nil }
+                self = .commandOutput(output)
+                return
+            }
+            self = .commandOutput(Self.prependingCommand(command, to: output))
         case "fileChange", "file_change", "diff":
             if let change = object["changes"]?.array?.compactMap(Self.fileChangeDetails).first {
                 self = .fileChange(path: change.path, diff: change.diff)
@@ -702,6 +744,55 @@ extension VisibleItem {
             object["path"]?.string ?? object["file"]?.string ?? "",
             object["diff"]?.string ?? object["text"]?.string ?? ""
         )
+    }
+
+    private static func commandLine(from object: [String: JSONValue]) -> String? {
+        for key in ["command", "cmd"] {
+            if let command = commandLine(from: object[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: object[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandLine(from value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        if let string = value.string {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let array = value.array {
+            let command = array.compactMap(\.string).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        guard let object = value.object else { return nil }
+        for key in ["text", "command", "cmd", "shell"] {
+            if let command = commandLine(from: object[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: object[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandLine(fromArgumentArray value: JSONValue?) -> String? {
+        guard let array = value?.array else { return nil }
+        let command = array.compactMap(\.string).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? nil : command
+    }
+
+    private static func prependingCommand(_ command: String, to output: String) -> String {
+        let prefix = "$ \(command)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
     }
 }
 

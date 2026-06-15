@@ -245,8 +245,14 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
             ?? outerObject["itemId"]?.string
             ?? outerObject["itemID"]?.string
             ?? "tool-started"
+        if isCommandExecutionItemType(type), let command = commandLine(from: item) {
+            return .commandOutputDelta(turnID: turnID, itemID: itemID, text: "$ \(command)\n")
+        }
         let label = toolLabel(from: item, fallbackType: type)
-        return .commandOutputDelta(turnID: turnID, itemID: itemID, text: "开始工具调用：\(label)\n")
+        if let path = readFilePath(from: item, label: label) {
+            return .commandOutputDelta(turnID: turnID, itemID: itemID, text: "读取文件：\(path)\n")
+        }
+        return .commandOutputDelta(turnID: turnID, itemID: itemID, text: "工具调用：\(label)\n")
     }
 
     private static func isCommandOutputItemType(_ type: String) -> Bool {
@@ -254,6 +260,15 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
         case "command_output", "commandOutput", "exec",
              "commandExecution", "command_execution", "commandExecutionOutput",
              "mcpToolCall", "dynamicToolCall", "collabAgentToolCall":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isCommandExecutionItemType(_ type: String) -> Bool {
+        switch type {
+        case "commandExecution", "command_execution", "commandExecutionOutput", "exec":
             return true
         default:
             return false
@@ -311,6 +326,29 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
     }
 
     private static func commandOutputText(from item: [String: ControlJSONValue]) -> String? {
+        if isCommandExecutionItemType(item["type"]?.string ?? item["kind"]?.string ?? "") {
+            let output = rawCommandOutputText(from: item) ?? ""
+            if let command = commandLine(from: item) {
+                let prefix = "$ \(command)\n"
+                return output.hasPrefix(prefix) ? output : prefix + output
+            }
+            return output.isEmpty ? nil : output
+        }
+        let type = item["type"]?.string ?? item["kind"]?.string ?? ""
+        if isNamedToolCallItemType(type),
+           let output = rawCommandOutputText(from: item) {
+            guard let label = toolLabelIfPresent(from: item) else {
+                return output
+            }
+            if let path = readFilePath(from: item, label: label) {
+                return prependingReadFile(path, to: output)
+            }
+            return prependingToolLabel(label, to: output)
+        }
+        return rawCommandOutputText(from: item)
+    }
+
+    private static func rawCommandOutputText(from item: [String: ControlJSONValue]) -> String? {
         for key in ["text", "aggregatedOutput", "aggregated_output", "output"] {
             if let text = item[key]?.string {
                 return text
@@ -326,6 +364,119 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
             }
         }
         return commandOutputText(from: item["result"])
+    }
+
+    private static func toolLabelIfPresent(from item: [String: ControlJSONValue]) -> String? {
+        item["name"]?.string
+            ?? item["toolName"]?.string
+            ?? item["tool_name"]?.string
+            ?? item["title"]?.string
+    }
+
+    private static func isNamedToolCallItemType(_ type: String) -> Bool {
+        switch type {
+        case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func commandLine(from item: [String: ControlJSONValue]) -> String? {
+        for key in ["command", "cmd"] {
+            if let command = commandLine(from: item[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: item[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandLine(from value: ControlJSONValue?) -> String? {
+        guard let value else { return nil }
+        if let string = value.string {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let array = value.array {
+            let command = array.compactMap(\.string).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        guard let object = value.object else { return nil }
+        for key in ["text", "command", "cmd", "shell"] {
+            if let command = commandLine(from: object[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: object[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandLine(fromArgumentArray value: ControlJSONValue?) -> String? {
+        guard let array = value?.array else { return nil }
+        let command = array.compactMap(\.string).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? nil : command
+    }
+
+    private static func readFilePath(from item: [String: ControlJSONValue], label: String) -> String? {
+        let normalizedLabel = label.lowercased()
+        guard normalizedLabel.contains("read") || normalizedLabel.contains("file") else {
+            return nil
+        }
+        for key in ["path", "file", "filePath", "file_path"] {
+            if let path = nonEmptyString(item[key]) {
+                return lastPathComponent(path)
+            }
+        }
+        for key in ["arguments", "args", "input"] {
+            if let path = readFilePath(from: item[key]) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private static func readFilePath(from value: ControlJSONValue?) -> String? {
+        guard let value else { return nil }
+        if let string = nonEmptyString(value) {
+            return lastPathComponent(string)
+        }
+        if let object = value.object {
+            for key in ["path", "file", "filePath", "file_path"] {
+                if let path = nonEmptyString(object[key]) {
+                    return lastPathComponent(path)
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func nonEmptyString(_ value: ControlJSONValue?) -> String? {
+        let trimmed = value?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private static func lastPathComponent(_ path: String) -> String {
+        (path as NSString).lastPathComponent.isEmpty ? path : (path as NSString).lastPathComponent
+    }
+
+    private static func prependingReadFile(_ path: String, to output: String) -> String {
+        let prefix = "读取文件：\(path)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
+    }
+
+    private static func prependingToolLabel(_ label: String, to output: String) -> String {
+        let prefix = "工具调用：\(label)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
     }
 
     private static func contentItemText(from value: ControlJSONValue) -> String? {

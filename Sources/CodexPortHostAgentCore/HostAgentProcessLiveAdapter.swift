@@ -494,14 +494,29 @@ public struct HostAgentProcessOutputMapper: Sendable {
                 guard let text else { return nil }
                 return .commandOutputDelta(turnID: turnID, itemID: itemID, text: text)
             case "commandExecution", "command_execution":
-                guard let output = item["aggregatedOutput"] as? String
+                let output = item["aggregatedOutput"] as? String
                     ?? item["aggregated_output"] as? String
                     ?? item["output"] as? String
                     ?? text
-                else { return nil }
-                return .commandOutputDelta(turnID: turnID, itemID: itemID, text: output)
+                    ?? ""
+                guard let command = commandLine(from: item) else {
+                    guard !output.isEmpty else { return nil }
+                    return .commandOutputDelta(turnID: turnID, itemID: itemID, text: output)
+                }
+                return .commandOutputDelta(turnID: turnID, itemID: itemID, text: prependingCommand(command, to: output))
             case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall":
                 guard let output = commandOutputText(from: item["result"]) else { return nil }
+                let label = item["name"] as? String
+                    ?? item["toolName"] as? String
+                    ?? item["tool_name"] as? String
+                    ?? item["title"] as? String
+                if let label,
+                   let path = readFilePath(from: item, label: label) {
+                    return .commandOutputDelta(turnID: turnID, itemID: itemID, text: prependingReadFile(path, to: output))
+                }
+                if let label {
+                    return .commandOutputDelta(turnID: turnID, itemID: itemID, text: prependingToolLabel(label, to: output))
+                }
                 return .commandOutputDelta(turnID: turnID, itemID: itemID, text: output)
             case "fileChange", "file_change", "diff":
                 let change = fileChangeDetails(from: item)
@@ -558,6 +573,115 @@ public struct HostAgentProcessOutputMapper: Sendable {
             return String(decoding: data, as: UTF8.self)
         }
         return nil
+    }
+
+    private func commandLine(from object: [String: Any]) -> String? {
+        for key in ["command", "cmd"] {
+            if let command = commandLine(from: object[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: object[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private func commandLine(from value: Any?) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let array = value as? [String] {
+            let command = array.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        if let array = value as? [Any] {
+            let command = array.compactMap { $0 as? String }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        guard let object = value as? [String: Any] else { return nil }
+        for key in ["text", "command", "cmd", "shell"] {
+            if let command = commandLine(from: object[key]) {
+                return command
+            }
+        }
+        for key in ["arguments", "args", "argv"] {
+            if let command = commandLine(fromArgumentArray: object[key]) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private func commandLine(fromArgumentArray value: Any?) -> String? {
+        if let array = value as? [String] {
+            let command = array.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        if let array = value as? [Any] {
+            let command = array.compactMap { $0 as? String }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        }
+        return nil
+    }
+
+    private func readFilePath(from object: [String: Any], label: String) -> String? {
+        let normalizedLabel = label.lowercased()
+        guard normalizedLabel.contains("read") || normalizedLabel.contains("file") else {
+            return nil
+        }
+        for key in ["path", "file", "filePath", "file_path"] {
+            if let path = nonEmptyString(object[key]) {
+                return lastPathComponent(path)
+            }
+        }
+        for key in ["arguments", "args", "input"] {
+            if let path = readFilePath(from: object[key]) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func readFilePath(from value: Any?) -> String? {
+        if let string = nonEmptyString(value) {
+            return lastPathComponent(string)
+        }
+        guard let object = value as? [String: Any] else { return nil }
+        for key in ["path", "file", "filePath", "file_path"] {
+            if let path = nonEmptyString(object[key]) {
+                return lastPathComponent(path)
+            }
+        }
+        return nil
+    }
+
+    private func nonEmptyString(_ value: Any?) -> String? {
+        let trimmed = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private func lastPathComponent(_ path: String) -> String {
+        (path as NSString).lastPathComponent.isEmpty ? path : (path as NSString).lastPathComponent
+    }
+
+    private func prependingCommand(_ command: String, to output: String) -> String {
+        let prefix = "$ \(command)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
+    }
+
+    private func prependingReadFile(_ path: String, to output: String) -> String {
+        let prefix = "读取文件：\(path)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
+    }
+
+    private func prependingToolLabel(_ label: String, to output: String) -> String {
+        let prefix = "工具调用：\(label)\n"
+        return output.hasPrefix(prefix) ? output : prefix + output
     }
 
     private func fileChangeDetails(from object: [String: Any]) -> (path: String, diff: String) {

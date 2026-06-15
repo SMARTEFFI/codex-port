@@ -269,12 +269,54 @@ import Testing
     assertProducerEvents(mappedEvents, contain: [
         .userMessage(turnID: "turn-remote", itemID: "write-1", text: "Hi from iPhone"),
         .assistantTextDelta(turnID: "turn-remote", itemID: "item-agent", text: "收到"),
-        .commandOutputDelta(turnID: "turn-remote", itemID: "item-tool", text: "开始工具调用：shell\n"),
+        .commandOutputDelta(turnID: "turn-remote", itemID: "item-tool", text: "工具调用：shell\n"),
         .commandOutputDelta(turnID: "turn-remote", itemID: "item-tool", text: "tool output"),
         .assistantTextDelta(turnID: "turn-remote", itemID: "item-agent", text: "收到。"),
         .turnCompleted(turnID: "turn-remote"),
     ])
     #expect(mappedEvents.filter { $0 == .userMessage(turnID: "turn-remote", itemID: "write-1", text: "Hi from iPhone") }.count == 1)
+}
+
+@Test func appServerControlSocketLiveProducerMapsCommandExecutionStartedToActualCommand() async throws {
+    let transport = RecordingCodexAppServerControlTransport()
+    let producer = CodexAppServerControlSocketLiveProducer(transport: transport)
+    var events = await producer.events().makeAsyncIterator()
+
+    try await producer.start(session: CodexCLILiveSessionDescriptor(
+        sessionID: "session-1",
+        threadID: "thread-1",
+        turnID: "turn-local"
+    ))
+
+    await transport.deliver(ControlJSONRPCNotification(
+        method: "item/started",
+        params: .object([
+            "turnId": .string("turn-remote"),
+            "item": .object([
+                "id": .string("cmd-1"),
+                "type": .string("commandExecution"),
+                "command": .string("python3 - <<'PY'"),
+            ]),
+        ])
+    ))
+    await transport.deliver(ControlJSONRPCNotification(
+        method: "item/completed",
+        params: .object([
+            "turnId": .string("turn-remote"),
+            "item": .object([
+                "id": .string("cmd-1"),
+                "type": .string("commandExecution"),
+                "command": .string("python3 - <<'PY'"),
+                "aggregatedOutput": .string("Traceback\n"),
+            ]),
+        ])
+    ))
+
+    let mappedEvents = await collectNext(3, from: &events)
+    assertProducerEvents(mappedEvents, contain: [
+        .commandOutputDelta(turnID: "turn-remote", itemID: "cmd-1", text: "$ python3 - <<'PY'\n"),
+        .commandOutputDelta(turnID: "turn-remote", itemID: "cmd-1", text: "$ python3 - <<'PY'\nTraceback\n"),
+    ])
 }
 
 @Test func appServerControlSocketLiveProducerRejectsPromptWhenTurnStartFails() async throws {

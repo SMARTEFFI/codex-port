@@ -28,8 +28,8 @@ import Testing
     #expect(rows.map(\.kind) == [.toolOutput, .toolOutput])
     #expect(rows[0].isCollapsed == true)
     #expect(rows[0].systemImage == "terminal")
-    #expect(rows[0].title == "运行命令")
-    #expect(rows[0].summary == "swift test")
+    #expect(rows[0].title == "已运行 swift test")
+    #expect(rows[0].summary == nil)
     #expect(rows[0].body == "")
     #expect(rows[1].isCollapsed == true)
     #expect(rows[1].systemImage == "doc.text")
@@ -49,7 +49,47 @@ import Testing
     #expect(expanded[0].id == collapsed[0].id)
     #expect(expanded[0].isCollapsed == false)
     #expect(expanded[0].body == "swift test\nBuild complete\nAll tests passed\n")
-    #expect(expanded[0].summary == "swift test")
+    #expect(expanded[0].title == "已运行 swift test")
+    #expect(expanded[0].summary == nil)
+    #expect(expanded[0].blocks == [.code(language: .shell, text: "swift test\nBuild complete\nAll tests passed\n")])
+}
+
+@Test func transcriptPresentationStripsLegacyToolMarkersFromExpandedCommandRows() {
+    let rows = TranscriptPresentation.rows(
+        for: [.commandOutput("开始工具调用：commandExecution\n$ python3 - <<'PY'\nprint('hi')\nPY\n")],
+        expandedToolRowIDs: ["0-command"]
+    )
+
+    #expect(rows[0].title == "已运行 python3 - <<'PY'")
+    #expect(rows[0].body == "$ python3 - <<'PY'\nprint('hi')\nPY\n")
+    #expect(rows[0].blocks == [.code(language: .shell, text: "$ python3 - <<'PY'\nprint('hi')\nPY\n")])
+}
+
+@Test func transcriptPresentationRendersReadFileToolRowsWithFileNameAndContent() {
+    let rows = TranscriptPresentation.rows(
+        for: [.commandOutput("读取文件：SKILL.md\n# Image Generation Skill\n\ncontent\n")],
+        expandedToolRowIDs: ["0-command"]
+    )
+
+    #expect(rows[0].title == "已读取 SKILL.md")
+    #expect(rows[0].systemImage == "doc.text")
+    #expect(rows[0].body == "# Image Generation Skill\n\ncontent\n")
+    #expect(rows[0].blocks == [.code(language: .markdown, text: "# Image Generation Skill\n\ncontent\n")])
+}
+
+@Test func transcriptPresentationInfersSkillMarkdownAsSkillFileRead() {
+    let rows = TranscriptPresentation.rows(for: [.commandOutput("""
+    ---
+    name: "imagegen"
+    description: "Generate images"
+    ---
+
+    # Image Generation Skill
+    content
+    """)])
+
+    #expect(rows[0].title == "已读取 SKILL.md")
+    #expect(rows[0].summary == nil)
 }
 
 @Test func transcriptPresentationParsesAssistantMarkdownCodeBlocks() {
