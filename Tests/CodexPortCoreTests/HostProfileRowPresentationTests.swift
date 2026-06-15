@@ -80,7 +80,7 @@ import Testing
         subtitle: "Mac: Mac Studio Relay · chenm",
         statusText: "读取会话中...",
         statusKind: .loading,
-        canOpenWorkspaces: true
+        canOpenWorkspaces: false
     ))
     #expect(HostProfileRowPresentation(profile: ready) == HostProfileRowPresentation(
         title: "Mac Studio Relay",

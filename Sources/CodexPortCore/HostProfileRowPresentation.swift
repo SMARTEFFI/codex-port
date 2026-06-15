@@ -54,7 +54,7 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
             case let .loading(stage):
                 statusText = Self.loadingStatusText(for: stage)
                 statusKind = .loading
-                canOpenWorkspaces = true
+                canOpenWorkspaces = false
             case let .offline(lastSeenAt):
                 if let lastSeenAt {
                     statusText = "离线 · 最后在线 \(Self.utcTimestamp(lastSeenAt))"
