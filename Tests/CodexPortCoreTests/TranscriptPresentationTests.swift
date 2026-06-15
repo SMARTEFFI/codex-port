@@ -192,3 +192,50 @@ import Testing
         "+added\n-removed\n"
     ])
 }
+
+@Test func transcriptPresentationRendersStructuredUserMessageSkillChipsWithoutRepeatingDollarText() {
+    let rows = TranscriptPresentation.rows(for: [
+        .structuredUserMessage(StructuredUserMessage(
+            body: "请整理这个 bug",
+            mentions: [
+                SkillMention(identifier: "triage", displayName: "Triage")
+            ]
+        ))
+    ])
+
+    #expect(rows[0].body == "请整理这个 bug")
+    #expect(rows[0].skillChips == [
+        TranscriptSkillChip(identifier: "triage", displayName: "Triage")
+    ])
+    #expect(rows[0].copyPayload == "请整理这个 bug")
+}
+
+@Test func transcriptPresentationRendersStructuredUserMessageImageAttachments() {
+    let rows = TranscriptPresentation.rows(for: [
+        .structuredUserMessage(StructuredUserMessage(
+            body: "看这张图",
+            attachments: [
+                MessageAttachment(
+                    id: "image-1",
+                    kind: .image(contentType: "image/png", detail: "high"),
+                    displayName: "screen.png",
+                    source: .localCache(path: "/app/cache/screen.png")
+                ),
+                MessageAttachment(
+                    id: "file-1",
+                    kind: .file(contentType: "text/plain"),
+                    displayName: "notes.txt",
+                    source: .remoteHostPath("/Users/chenm/Desktop/notes.txt")
+                )
+            ]
+        ))
+    ])
+
+    #expect(rows[0].imageAttachments == [
+        ImageAttachmentGalleryItem(
+            id: "image-1",
+            displayName: "screen.png",
+            availability: .available(localPath: "/app/cache/screen.png")
+        )
+    ])
+}

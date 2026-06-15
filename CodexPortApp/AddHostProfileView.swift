@@ -130,8 +130,9 @@ struct AddHostProfileView: View {
         }
         .sheet(isPresented: $isScannerPresented) {
             RelayPairingScannerView { material in
-                form.pairingMaterial = material
-                isScannerPresented = false
+                if form.applyScannedPairingMaterial(material) {
+                    isScannerPresented = false
+                }
             }
         }
         .alert("保存失败", isPresented: Binding(
@@ -304,13 +305,35 @@ private struct RelayPairingScannerView: UIViewControllerRepresentable {
 
         func dataScanner(
             _ dataScanner: DataScannerViewController,
-            didTapOn item: RecognizedItem
+            didAdd addedItems: [RecognizedItem],
+            allItems: [RecognizedItem]
         ) {
+            handle(items: addedItems)
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            didUpdate updatedItems: [RecognizedItem],
+            allItems: [RecognizedItem]
+        ) {
+            handle(items: updatedItems)
+        }
+
+        func dataScanner(_ dataScanner: DataScannerViewController, didTapOn item: RecognizedItem) {
+            handle(items: [item])
+        }
+
+        private func handle(items: [RecognizedItem]) {
+            guard let payload = items.lazy.compactMap(Self.payloadString).first else { return }
+            onMaterial(payload)
+        }
+
+        private static func payloadString(from item: RecognizedItem) -> String? {
             guard case let .barcode(barcode) = item,
                   let payload = barcode.payloadStringValue,
                   !payload.isEmpty
-            else { return }
-            onMaterial(payload)
+            else { return nil }
+            return payload
         }
     }
 }

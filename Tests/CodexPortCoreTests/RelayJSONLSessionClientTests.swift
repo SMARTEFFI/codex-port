@@ -65,6 +65,50 @@ import Testing
     #expect(attach["cwd"] as? String == "/Users/chenm/Projects/codex-port")
 }
 
+@Test func relayJSONLSessionClientReadsRemoteFileContentOverJSONL() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let client = RelayJSONLSessionClient(
+        clientID: "iphone-a",
+        sessionID: "session-1",
+        threadID: "thread-1",
+        turnID: "turn-1",
+        transport: transport,
+        sessionStore: store
+    )
+
+    try await client.attach()
+    async let result = client.readRemoteFile(
+        path: "/Users/chenm/Desktop/screen.png",
+        maxBytes: 10,
+        requestID: "file-1",
+        timeout: .milliseconds(300)
+    )
+    await waitUntil {
+        (try? transport.sentLinesSyncSnapshot().contains { $0.contains(#""type":"readFile""#) }) == true
+    }
+    try transport.emit(RelayEndpointJSONLCodec.encodeFileContent(
+        RelayRemoteFileContent(
+            requestID: "file-1",
+            path: "/Users/chenm/Desktop/screen.png",
+            contentType: "image/png",
+            byteCount: 4,
+            dataBase64: "iVBORw=="
+        ),
+        clientID: "iphone-a"
+    ))
+
+    #expect(try await result == .success(RemoteFileContent(
+        path: "/Users/chenm/Desktop/screen.png",
+        contentType: "image/png",
+        byteCount: 4,
+        data: Data(base64Encoded: "iVBORw==") ?? Data()
+    )))
+    #expect(await transport.sentLinesSnapshot().contains(
+        #"{"clientID":"iphone-a","maxBytes":10,"path":"\/Users\/chenm\/Desktop\/screen.png","requestID":"file-1","type":"readFile"}"#
+    ))
+}
+
 @Test func relayJSONLSessionClientSurfacesAbortedSendWithoutAppendingOptimisticPrompt() async throws {
     let transport = RecordingRelayJSONLTransport()
     let store = SessionStore(protocolClient: FakeCodexProtocol())

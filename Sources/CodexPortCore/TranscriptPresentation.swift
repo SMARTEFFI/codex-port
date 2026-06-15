@@ -18,6 +18,8 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
     public var isCollapsed: Bool
     public var blocks: [TranscriptBlock]
     public var diffLines: [TranscriptDiffLine]
+    public var skillChips: [TranscriptSkillChip]
+    public var imageAttachments: [ImageAttachmentGalleryItem]
     public var copyPayload: String?
 
     public var usesBubble: Bool {
@@ -34,6 +36,8 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
         isCollapsed: Bool = false,
         blocks: [TranscriptBlock] = [],
         diffLines: [TranscriptDiffLine] = [],
+        skillChips: [TranscriptSkillChip] = [],
+        imageAttachments: [ImageAttachmentGalleryItem] = [],
         copyPayload: String? = nil
     ) {
         self.id = id
@@ -45,7 +49,19 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
         self.isCollapsed = isCollapsed
         self.blocks = blocks
         self.diffLines = diffLines
+        self.skillChips = skillChips
+        self.imageAttachments = imageAttachments
         self.copyPayload = copyPayload
+    }
+}
+
+public struct TranscriptSkillChip: Equatable, Sendable {
+    public var identifier: String
+    public var displayName: String
+
+    public init(identifier: String, displayName: String) {
+        self.identifier = identifier
+        self.displayName = displayName
     }
 }
 
@@ -59,6 +75,15 @@ public enum TranscriptPresentation {
             switch item {
             case let .userMessage(text):
                 return TranscriptRow(id: "\(index)-user", kind: .userBubble, body: text, copyPayload: text)
+            case let .structuredUserMessage(message):
+                return TranscriptRow(
+                    id: "\(index)-user",
+                    kind: .userBubble,
+                    body: message.body,
+                    skillChips: message.mentions.map { TranscriptSkillChip(identifier: $0.identifier, displayName: $0.displayName) },
+                    imageAttachments: message.attachments.compactMap(ImageAttachmentGalleryItem.init(attachment:)),
+                    copyPayload: message.body
+                )
             case let .assistantMessage(text):
                 return TranscriptRow(
                     id: "\(index)-assistant",
@@ -129,7 +154,7 @@ public enum TranscriptPresentation {
         guard status == .running else { return nil }
         guard let latestItem = items.last else { return nil }
         switch latestItem {
-        case .userMessage:
+        case .userMessage, .structuredUserMessage:
             return "正在思考..."
         case .commandOutput, .fileChange:
             return "正在工作..."

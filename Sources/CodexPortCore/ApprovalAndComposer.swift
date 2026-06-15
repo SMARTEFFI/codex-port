@@ -109,7 +109,11 @@ public enum InputPrimaryAction: Equatable, Sendable {
 }
 
 public struct InputComposer: Equatable, Sendable {
-    public var text: String = ""
+    public var message = StructuredUserMessage(body: "")
+    public var text: String {
+        get { message.body }
+        set { message.body = newValue }
+    }
     public var attachments: [TurnAttachment] = []
     public var modelDisplay: String
     public var model: CodexModel = .gpt55
@@ -125,7 +129,10 @@ public struct InputComposer: Equatable, Sendable {
     }
 
     public var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !attachments.isEmpty
+            || !message.attachments.isEmpty
+            || !message.mentions.isEmpty
     }
 
     public var primaryAction: InputPrimaryAction {
@@ -176,6 +183,27 @@ public struct InputComposer: Equatable, Sendable {
         updateModelDisplay()
     }
 
+    public func skillSuggestions(in catalog: SkillCatalog) -> [SkillMention] {
+        guard let query = currentSkillQuery else { return [] }
+        return catalog.skills.filter { skill in
+            skill.identifier.localizedCaseInsensitiveContains(query)
+                || skill.displayName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    public mutating func selectSkillMention(_ mention: SkillMention) {
+        message.mentions.removeAll { $0.identifier == mention.identifier }
+        message.mentions.append(mention)
+        if let range = currentSkillQueryRange {
+            text.removeSubrange(range)
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    public mutating func removeSkillMention(id: String) {
+        message.mentions.removeAll { $0.identifier == id }
+    }
+
     public mutating func setReasoningEffort(_ effort: ReasoningEffort) {
         guard capabilities.reasoningEffort.isSupported else { return }
         self.reasoningEffort = effort
@@ -184,6 +212,37 @@ public struct InputComposer: Equatable, Sendable {
 
     private mutating func updateModelDisplay() {
         modelDisplay = "\(model.shortDisplayName) \(reasoningEffort.shortDisplayName)"
+    }
+
+    private var currentSkillQuery: String? {
+        guard let range = currentSkillQueryRange else { return nil }
+        let queryStart = text.index(after: range.lowerBound)
+        let query = String(text[queryStart..<range.upperBound])
+        return query.isEmpty ? nil : query
+    }
+
+    private var currentSkillQueryRange: Range<String.Index>? {
+        var ranges: [Range<String.Index>] = []
+        var searchStart = text.startIndex
+        while searchStart < text.endIndex,
+              let dollar = text[searchStart...].firstIndex(of: "$")
+        {
+            let previous = dollar == text.startIndex ? nil : text[text.index(before: dollar)]
+            let isBoundary = previous == nil || previous?.isWhitespace == true || previous?.isNewline == true
+            var end = text.index(after: dollar)
+            while end < text.endIndex {
+                let character = text[end]
+                guard character.isLetter || character.isNumber || character == "-" || character == "_" else {
+                    break
+                }
+                end = text.index(after: end)
+            }
+            if isBoundary, end > text.index(after: dollar) {
+                ranges.append(dollar..<end)
+            }
+            searchStart = end
+        }
+        return ranges.last
     }
 }
 

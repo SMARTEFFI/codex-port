@@ -98,6 +98,19 @@ public final class PersistentHostProfileStore {
         return profiles[index]
     }
 
+    public func updateRelayReadiness(id: UUID, readiness: RelayHostReadiness) throws -> HostProfile {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else {
+            throw HostProfileStoreError.notFound
+        }
+        guard case var .relay(relayHost) = profiles[index].connectionMethod else {
+            throw HostProfileStoreError.notRelayHost
+        }
+        relayHost.readiness = readiness
+        profiles[index].connectionMethod = .relay(relayHost)
+        try repository.save(profiles)
+        return profiles[index]
+    }
+
     private func makeProfile(id: UUID, draft: HostProfileDraft, knownHostFingerprint: String?) throws -> HostProfile {
         let auth: HostProfileAuth
         switch draft.auth {
@@ -286,6 +299,7 @@ private struct StoredRelayHost: Codable {
     var deviceID: UUID?
     var relayEndpointURL: URL?
     var presence: StoredRelayHostPresence
+    var readiness: StoredRelayHostReadiness?
     var diagnosticsSummary: String
 
     init(_ host: RelayHost) {
@@ -296,6 +310,7 @@ private struct StoredRelayHost: Codable {
         deviceID = host.deviceID
         relayEndpointURL = host.relayEndpointURL
         presence = StoredRelayHostPresence(host.presence)
+        readiness = StoredRelayHostReadiness(host.readiness)
         diagnosticsSummary = host.diagnosticsSummary
     }
 
@@ -308,6 +323,7 @@ private struct StoredRelayHost: Codable {
             deviceID: deviceID,
             relayEndpointURL: relayEndpointURL,
             presence: presence.relayHostPresence,
+            readiness: readiness?.relayHostReadiness ?? RelayHostReadiness.default(for: presence.relayHostPresence),
             diagnosticsSummary: diagnosticsSummary
         )
     }
@@ -332,6 +348,39 @@ private enum StoredRelayHostPresence: Codable {
             return .offline(lastSeenAt: lastSeenAt)
         case let .online(activeConnectionCount):
             return .online(activeConnectionCount: activeConnectionCount)
+        }
+    }
+}
+
+private enum StoredRelayHostReadiness: Codable {
+    case offline(lastSeenAt: Date?)
+    case loading(stage: RelayHostReadinessStage)
+    case ready(loadedThreadCount: Int)
+    case failed(reason: RelayHostReadinessFailureReason, message: String)
+
+    init(_ readiness: RelayHostReadiness) {
+        switch readiness {
+        case let .offline(lastSeenAt):
+            self = .offline(lastSeenAt: lastSeenAt)
+        case let .loading(stage):
+            self = .loading(stage: stage)
+        case let .ready(loadedThreadCount):
+            self = .ready(loadedThreadCount: loadedThreadCount)
+        case let .failed(reason, message):
+            self = .failed(reason: reason, message: message)
+        }
+    }
+
+    var relayHostReadiness: RelayHostReadiness {
+        switch self {
+        case let .offline(lastSeenAt):
+            return .offline(lastSeenAt: lastSeenAt)
+        case let .loading(stage):
+            return .loading(stage: stage)
+        case let .ready(loadedThreadCount):
+            return .ready(loadedThreadCount: loadedThreadCount)
+        case let .failed(reason, message):
+            return .failed(reason: reason, message: message)
         }
     }
 }

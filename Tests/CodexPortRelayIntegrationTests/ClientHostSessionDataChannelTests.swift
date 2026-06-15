@@ -107,6 +107,63 @@ import Testing
     ])
 }
 
+@Test func clientHostSessionProtocolResolvesRemoteHostPathImageThroughDataChannel() async throws {
+    let context = try await ClientHostSessionP2PTestContext.make()
+    let pair = P2PWebRTCDataChannelTransportPair(
+        signalingService: context.service,
+        session: context.session
+    )
+    try await pair.open()
+    let clientTransport = ClientHostSessionDataChannelTransport(dataChannel: pair.client)
+    let hostTransport = ClientHostSessionDataChannelTransport(dataChannel: pair.host)
+    let pngBytes = Data([0x89, 0x50, 0x4E, 0x47])
+    let hostTask = Task {
+        for await line in hostTransport.incomingLines {
+            guard line.contains(#""type":"readFile""#) else {
+                continue
+            }
+            let requestObject = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            let requestID = try #require(requestObject?["requestID"] as? String)
+            let response = try RelayEndpointJSONLCodec.encodeFileContent(
+                RelayRemoteFileContent(
+                    requestID: requestID,
+                    path: "/Users/chenm/Desktop/screen.png",
+                    contentType: "image/png",
+                    byteCount: pngBytes.count,
+                    dataBase64: pngBytes.base64EncodedString()
+                ),
+                clientID: "iphone-a"
+            )
+            try await pair.host.send(Data((response + "\n").utf8))
+            return
+        }
+    }
+    let store = SessionStore(protocolClient: RelaySessionPlaceholderProtocolClient(threadID: "thread-1"))
+    let client = ClientHostSessionClient(
+        clientID: "iphone-a",
+        sessionID: "session-1",
+        threadID: "thread-1",
+        turnID: "turn-1",
+        transport: clientTransport,
+        sessionStore: store
+    )
+    let resolver = RemoteImageAttachmentResolver(
+        reader: client,
+        cache: DataChannelRemoteImageCache(),
+        maxBytes: 10
+    )
+
+    let resolved = await resolver.resolve(MessageAttachment(
+        id: "remote-image-1",
+        kind: .image(contentType: "image/png", detail: "high"),
+        displayName: "screen.png",
+        source: .remoteHostPath("/Users/chenm/Desktop/screen.png")
+    ))
+
+    hostTask.cancel()
+    #expect(resolved.source == MessageAttachmentSource.localCache(path: "/cache/remote-image-1.png"))
+}
+
 @Test func clientHostSessionProtocolSurfacesTransportCloseWhenRequestingThreadList() async throws {
     let context = try await ClientHostSessionP2PTestContext.make()
     let pair = P2PWebRTCDataChannelTransportPair(
@@ -553,7 +610,7 @@ private actor MultiDeviceHostSessionHub {
             Task {
                 try? await send(.sessionStarted(sessionID: sessionID, threadID: threadID, turnID: turnID), to: clientID)
             }
-        case .listThreads, .loadHistory, .detach, .stop:
+        case .listThreads, .loadHistory, .readFile, .detach, .stop:
             break
         }
     }
@@ -623,6 +680,13 @@ private actor HostCommandInbox {
 
     private func record(_ command: HostAgentLocalRelayJSONLCommand) {
         receivedCommands.append(command)
+    }
+}
+
+private final class DataChannelRemoteImageCache: RemoteImageCaching {
+    func store(_ content: RemoteFileContent, attachmentID: String) async -> Result<String, RemoteImageCacheError> {
+        let ext = URL(fileURLWithPath: content.path).pathExtension
+        return .success("/cache/\(attachmentID).\(ext.isEmpty ? "img" : ext)")
     }
 }
 

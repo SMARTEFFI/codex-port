@@ -19,17 +19,20 @@ public struct HostAgentLocalRelayService: Sendable {
     private let runtime: HostAgentLocalRelayRuntime
     private let threadListProvider: HostAgentThreadListProviding
     private let threadHistoryProvider: HostAgentThreadHistoryProviding
+    private let remoteFileProvider: HostAgentRemoteFileProviding
     private let threadHistoryTimeout: Duration
 
     public init(
         commandFactory: @escaping HostAgentLocalRelayRuntime.CommandFactory,
         threadListProvider: HostAgentThreadListProviding = HostAgentCodexAppServerThreadListProvider(),
         threadHistoryProvider: HostAgentThreadHistoryProviding = HostAgentCodexAppServerThreadListProvider(),
+        remoteFileProvider: HostAgentRemoteFileProviding = HostAgentRemoteFileProvider(),
         threadHistoryTimeout: Duration = .seconds(8)
     ) {
         self.runtime = HostAgentLocalRelayRuntime(commandFactory: commandFactory)
         self.threadListProvider = threadListProvider
         self.threadHistoryProvider = threadHistoryProvider
+        self.remoteFileProvider = remoteFileProvider
         self.threadHistoryTimeout = threadHistoryTimeout
     }
 
@@ -37,11 +40,13 @@ public struct HostAgentLocalRelayService: Sendable {
         adapterFactory: @escaping HostAgentLocalRelayRuntime.AdapterFactory,
         threadListProvider: HostAgentThreadListProviding = HostAgentCodexAppServerThreadListProvider(),
         threadHistoryProvider: HostAgentThreadHistoryProviding = HostAgentCodexAppServerThreadListProvider(),
+        remoteFileProvider: HostAgentRemoteFileProviding = HostAgentRemoteFileProvider(),
         threadHistoryTimeout: Duration = .seconds(8)
     ) {
         self.runtime = HostAgentLocalRelayRuntime(adapterFactory: adapterFactory)
         self.threadListProvider = threadListProvider
         self.threadHistoryProvider = threadHistoryProvider
+        self.remoteFileProvider = remoteFileProvider
         self.threadHistoryTimeout = threadHistoryTimeout
     }
 
@@ -95,6 +100,19 @@ public struct HostAgentLocalRelayService: Sendable {
                     nextCursor: response.nextCursor
                 )
                 let outputLine = try HostAgentLocalRelayJSONLCodec.encodeThreadHistoryPage(page, clientID: clientID)
+                await output(outputLine)
+            } catch {
+                let outputLine = try HostAgentLocalRelayJSONLCodec.encodeError(String(describing: error), clientID: clientID)
+                await output(outputLine)
+            }
+        case let .readFile(clientID, requestID, path, maxBytes):
+            do {
+                let content = try await remoteFileProvider.readFile(
+                    path: path,
+                    maxBytes: maxBytes,
+                    requestID: requestID
+                )
+                let outputLine = try RelayEndpointJSONLCodec.encodeFileContent(content, clientID: clientID)
                 await output(outputLine)
             } catch {
                 let outputLine = try HostAgentLocalRelayJSONLCodec.encodeError(String(describing: error), clientID: clientID)

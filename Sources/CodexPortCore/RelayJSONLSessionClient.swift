@@ -36,6 +36,7 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
     private var latestWriteStatusStorage: WriteStatusUpdate?
     private var receiveTask: Task<Void, Never>?
     private var pendingHistoryPages: [String: CheckedContinuation<RelayThreadHistoryPage, Error>] = [:]
+    private var pendingRemoteFiles: [String: CheckedContinuation<RemoteFileContent, Error>] = [:]
     private var pendingWriteStatusAcceptances: [String: CheckedContinuation<RelayWriteStatus, Error>] = [:]
     private var pendingPromptTexts: [String: String] = [:]
 
@@ -215,18 +216,86 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
         }
     }
 
+    public func readRemoteFile(
+        path: String,
+        maxBytes: Int,
+        requestID: String = UUID().uuidString,
+        timeout: Duration = .seconds(10)
+    ) async -> Result<RemoteFileContent, RemoteImageReadError> {
+        startReceivingIfNeeded()
+        let line: String
+        do {
+            line = try encodeCommand([
+                "type": "readFile",
+                "clientID": clientID,
+                "requestID": requestID,
+                "path": path,
+                "maxBytes": max(1, maxBytes),
+            ])
+        } catch {
+            return .failure(.transport(String(describing: error)))
+        }
+        do {
+            let content = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    let replacedContinuation = lock.withLock {
+                        pendingRemoteFiles.updateValue(continuation, forKey: requestID)
+                    }
+                    replacedContinuation?.resume(throwing: RelayJSONLSessionClientError.timedOut)
+                    Task { [weak self] in
+                        guard let self else { return }
+                        let timeoutTask = Task { [weak self] in
+                            try? await Task.sleep(for: timeout)
+                            self?.resumePendingRemoteFile(
+                                requestID: requestID,
+                                result: .failure(RelayJSONLSessionClientError.timedOut)
+                            )
+                        }
+                        do {
+                            try await self.transport.sendLine(line)
+                        } catch {
+                            timeoutTask.cancel()
+                            self.resumePendingRemoteFile(requestID: requestID, result: .failure(error))
+                        }
+                    }
+                }
+            } onCancel: {
+                resumePendingRemoteFile(
+                    requestID: requestID,
+                    result: .failure(RelayJSONLSessionClientError.timedOut)
+                )
+            }
+            return .success(content)
+        } catch RelayJSONLSessionClientError.timedOut {
+            return .failure(.transport("远端图片读取超时"))
+        } catch let error as RelayJSONLSessionClientError {
+            return .failure(.transport(String(describing: error)))
+        } catch {
+            return .failure(.transport(String(describing: error)))
+        }
+    }
+
+    public func readRemoteFile(path: String, maxBytes: Int) async -> Result<RemoteFileContent, RemoteImageReadError> {
+        await readRemoteFile(path: path, maxBytes: maxBytes, requestID: UUID().uuidString, timeout: .seconds(10))
+    }
+
     public func stop() {
         receiveTask?.cancel()
         receiveTask = nil
-        let (historyContinuations, writeContinuations) = lock.withLock {
+        let (historyContinuations, fileContinuations, writeContinuations) = lock.withLock {
             let historyContinuations = Array(pendingHistoryPages.values)
+            let fileContinuations = Array(pendingRemoteFiles.values)
             let writeContinuations = Array(pendingWriteStatusAcceptances.values)
             pendingHistoryPages.removeAll()
+            pendingRemoteFiles.removeAll()
             pendingWriteStatusAcceptances.removeAll()
             pendingPromptTexts.removeAll()
-            return (historyContinuations, writeContinuations)
+            return (historyContinuations, fileContinuations, writeContinuations)
         }
         for continuation in historyContinuations {
+            continuation.resume(throwing: RelayJSONLSessionClientError.timedOut)
+        }
+        for continuation in fileContinuations {
             continuation.resume(throwing: RelayJSONLSessionClientError.timedOut)
         }
         for continuation in writeContinuations {
@@ -263,16 +332,39 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
             sessionStore.receive(relayHistoryPage: page)
             guard page.requestID != "initial" else { return }
             resumePendingHistoryPage(requestID: page.requestID, result: .success(page))
+        case let .fileContent(messageClientID, content):
+            guard messageClientID == clientID else { return }
+            guard let data = Data(base64Encoded: content.dataBase64) else {
+                resumePendingRemoteFile(
+                    requestID: content.requestID,
+                    result: .failure(RelayJSONLSessionClientError.hostAgentError("invalid file data"))
+                )
+                return
+            }
+            resumePendingRemoteFile(
+                requestID: content.requestID,
+                result: .success(RemoteFileContent(
+                    path: content.path,
+                    contentType: content.contentType,
+                    byteCount: content.byteCount,
+                    data: data
+                ))
+            )
         case let .error(messageClientID, reason):
             guard messageClientID == nil || messageClientID == clientID else { return }
-            let (historyContinuations, writeContinuations) = lock.withLock {
+            let (historyContinuations, fileContinuations, writeContinuations) = lock.withLock {
                 let historyContinuations = Array(pendingHistoryPages.values)
+                let fileContinuations = Array(pendingRemoteFiles.values)
                 let writeContinuations = Array(pendingWriteStatusAcceptances.values)
                 pendingHistoryPages.removeAll()
+                pendingRemoteFiles.removeAll()
                 pendingWriteStatusAcceptances.removeAll()
-                return (historyContinuations, writeContinuations)
+                return (historyContinuations, fileContinuations, writeContinuations)
             }
             for continuation in historyContinuations {
+                continuation.resume(throwing: RelayJSONLSessionClientError.hostAgentError(reason))
+            }
+            for continuation in fileContinuations {
                 continuation.resume(throwing: RelayJSONLSessionClientError.hostAgentError(reason))
             }
             for continuation in writeContinuations {
@@ -342,8 +434,25 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
         }
     }
 
+    private func resumePendingRemoteFile(
+        requestID: String,
+        result: Result<RemoteFileContent, Error>
+    ) {
+        let continuation = lock.withLock {
+            pendingRemoteFiles.removeValue(forKey: requestID)
+        }
+        switch result {
+        case let .success(content):
+            continuation?.resume(returning: content)
+        case let .failure(error):
+            continuation?.resume(throwing: error)
+        }
+    }
+
     private func encodeCommand(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
     }
 }
+
+extension RelayJSONLSessionClient: RemoteImageReading {}

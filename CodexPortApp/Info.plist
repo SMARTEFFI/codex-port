@@ -37,6 +37,8 @@
 	<string>用于拍摄图片并附加到 Codex 会话。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>用于选择图片并附加到 Codex 会话。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>用于将会话中的图片保存到手机相册。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

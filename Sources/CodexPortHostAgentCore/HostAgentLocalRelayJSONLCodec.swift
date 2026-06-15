@@ -4,6 +4,7 @@ import CodexPortShared
 public enum HostAgentLocalRelayJSONLCommand: Equatable, Sendable {
     case listThreads(clientID: String, requestID: String, limit: Int, cursor: String?)
     case loadHistory(clientID: String, requestID: String, threadID: String, limit: Int, cursor: String?)
+    case readFile(clientID: String, requestID: String, path: String, maxBytes: Int)
     case attach(clientID: String, request: HostAgentLocalRelayAttachRequest)
     case submit(clientID: String, sessionID: String, write: RelayLiveSessionWrite)
     case detach(clientID: String, sessionID: String)
@@ -39,6 +40,13 @@ public enum HostAgentLocalRelayJSONLCodec {
                 threadID: try string("threadID", in: object),
                 limit: int("limit", in: object) ?? 10,
                 cursor: object["cursor"] as? String
+            )
+        case "readFile":
+            return .readFile(
+                clientID: try string("clientID", in: object),
+                requestID: try string("requestID", in: object),
+                path: try string("path", in: object),
+                maxBytes: int("maxBytes", in: object) ?? 5_000_000
             )
         case "attach":
             return .attach(
@@ -206,6 +214,8 @@ public extension HostAgentLocalRelayJSONLCommand {
             HostAgentLocalRelayCommandDiagnosticSummary(type: "listThreads", clientID: clientID, inputBytes: inputBytes)
         case let .loadHistory(clientID, _, threadID, _, _):
             HostAgentLocalRelayCommandDiagnosticSummary(type: "loadHistory", clientID: clientID, threadID: threadID, inputBytes: inputBytes)
+        case let .readFile(clientID, _, _, _):
+            HostAgentLocalRelayCommandDiagnosticSummary(type: "readFile", clientID: clientID, inputBytes: inputBytes)
         case let .attach(clientID, request):
             HostAgentLocalRelayCommandDiagnosticSummary(
                 type: "attach",

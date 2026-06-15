@@ -79,7 +79,13 @@ public final class ClientHostSessionClient: @unchecked Sendable {
         )
     }
 
+    public func readRemoteFile(path: String, maxBytes: Int) async -> Result<RemoteFileContent, RemoteImageReadError> {
+        await client.readRemoteFile(path: path, maxBytes: maxBytes)
+    }
+
     public func stop() {
         client.stop()
     }
 }
+
+extension ClientHostSessionClient: RemoteImageReading {}

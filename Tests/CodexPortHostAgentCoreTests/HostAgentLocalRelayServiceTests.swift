@@ -141,6 +141,36 @@ import Testing
     ])
 }
 
+@Test func hostAgentLocalRelayServiceReadsAuthorizedLocalFileBytes() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codexport-host-agent-file-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let fileURL = directory.appendingPathComponent("screen.png")
+    let data = Data([0x89, 0x50, 0x4E, 0x47])
+    try data.write(to: fileURL)
+    let service = HostAgentLocalRelayService(
+        commandFactory: { _ in HostAgentProcessCommand(executablePath: "/bin/false") }
+    )
+
+    let output = try await service.runScriptedSession(inputLines: [
+        #"{"type":"readFile","clientID":"iphone-a","requestID":"file-1","path":"\#(fileURL.path)","maxBytes":10}"#,
+    ])
+    let decoded = try output.map(RelayEndpointJSONLCodec.decodeLine)
+
+    #expect(decoded == [
+        .fileContent(clientID: "iphone-a", RelayRemoteFileContent(
+            requestID: "file-1",
+            path: fileURL.path,
+            contentType: "image/png",
+            byteCount: data.count,
+            dataBase64: data.base64EncodedString()
+        ))
+    ])
+}
+
 @Test func hostAgentLocalRelayServiceDoesNotBlockAttachWhenHistoryProviderHangs() async throws {
     let service = HostAgentLocalRelayService(
         commandFactory: { _ in

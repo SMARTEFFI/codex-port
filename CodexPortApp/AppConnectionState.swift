@@ -94,6 +94,17 @@ final class AppConnectionState: ObservableObject {
         await connect(profile: profile, unknownHostDecision: .rejectUnknownHost, resetLog: true)
     }
 
+    func relayReadiness(for profile: HostProfile) -> RelayHostReadiness? {
+        guard case let .relay(relayHost) = profile.connectionMethod else { return nil }
+        guard !canReuseConnection(for: profile) else {
+            return .ready(loadedThreadCount: recentThreads.count)
+        }
+        if isConnecting {
+            return .loading(stage: .threadList)
+        }
+        return relayHost.readiness
+    }
+
     func confirmPendingHostKeyAndConnect() async {
         guard let pendingProfile, let pendingConfirmation = pendingHostKeyConfirmation else { return }
         onHostKeyTrusted?(pendingConfirmation)
@@ -112,10 +123,11 @@ final class AppConnectionState: ObservableObject {
             connectionLogTitle = "连接 \(profile.name)"
             connectionLogs = []
             connectionProgressMessage = "准备连接..."
-            isConnectionLogPresented = true
             if profile.connectionMethod.isRelay {
+                isConnectionLogPresented = false
                 appendConnectionLog("准备连接已配对的 HostAgent：\(profile.name)")
             } else {
+                isConnectionLogPresented = true
                 appendConnectionLog("准备连接 \(profile.username)@\(profile.host):\(profile.port)")
             }
         } else {
@@ -191,6 +203,9 @@ final class AppConnectionState: ObservableObject {
             let message = connectionErrorMessage(for: error)
             errorMessage = message
             appendConnectionLog("连接失败：\(message)", level: .error)
+            if profile.connectionMethod.isRelay {
+                isConnectionLogPresented = false
+            }
         }
     }
 

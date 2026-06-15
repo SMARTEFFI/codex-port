@@ -360,6 +360,35 @@ import Testing
     ))
 }
 
+@Test func sessionStoreSendsStructuredUserMessageThroughExistingTurnAttachmentProtocol() async throws {
+    let protocolClient = FakeCodexProtocol()
+    protocolClient.thread = ThreadDetail(id: "thread-1", turns: [])
+    let store = SessionStore(protocolClient: protocolClient)
+    try await store.open(threadID: "thread-1")
+
+    var composer = InputComposer(modelDisplay: "5.5 超高")
+    composer.message = StructuredUserMessage(
+        body: "分析图片",
+        attachments: [
+            MessageAttachment(
+                id: "image-1",
+                kind: .image(contentType: "image/png", detail: "high"),
+                displayName: "screen.png",
+                source: .localCache(path: "/app/cache/screen.png")
+            )
+        ]
+    )
+
+    try await store.send(composer: composer)
+
+    #expect(protocolClient.lastTurnStart?.prompt == "分析图片")
+    #expect(protocolClient.lastTurnStart?.attachments == [
+        .localImage(path: "/app/cache/screen.png", detail: "high")
+    ])
+    #expect(store.visibleItems == [.structuredUserMessage(composer.message)])
+}
+
+
 @Test func sessionStoreOpensNewThreadWithoutResumingHistory() async throws {
     let protocolClient = FakeCodexProtocol()
     let store = SessionStore(protocolClient: protocolClient)
@@ -464,7 +493,7 @@ import Testing
     try await store.send(
         composer: composer,
         pendingAttachments: [
-            PendingAttachment(name: "camera.jpg", kind: .image(detail: "high"), data: Data([0xCA, 0xFE])),
+            PendingAttachment(name: "camera.jpg", kind: .image(detail: "high"), data: Data([0xCA, 0xFE]), localCachePath: "/app/cache/camera.jpg"),
             PendingAttachment(name: "notes.txt", kind: .file, data: Data("notes".utf8))
         ],
         attachmentBridge: bridge
@@ -481,6 +510,23 @@ import Testing
         .localImage(path: "/home/codex/.codex-port/attachments/thread-1/1700000000/camera.jpg", detail: "high"),
         .remoteFile(path: "/home/codex/.codex-port/attachments/thread-1/1700000000/notes.txt")
     ])
+    #expect(store.visibleItems.last == .structuredUserMessage(StructuredUserMessage(
+        body: "分析这些附件",
+        attachments: [
+            MessageAttachment(
+                id: "camera.jpg",
+                kind: .image(contentType: nil, detail: "high"),
+                displayName: "camera.jpg",
+                source: .localCache(path: "/app/cache/camera.jpg")
+            ),
+            MessageAttachment(
+                id: "notes.txt",
+                kind: .file(contentType: nil),
+                displayName: "notes.txt",
+                source: .remoteHostPath("/home/codex/.codex-port/attachments/thread-1/1700000000/notes.txt")
+            )
+        ]
+    )))
 }
 
 @Test func sessionStoreMergesStreamedEventsAndInterruptsRunningTurn() async throws {

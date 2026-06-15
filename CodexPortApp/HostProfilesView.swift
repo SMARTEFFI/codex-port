@@ -24,6 +24,7 @@ struct HostProfilesView: View {
                             HostProfileRow(profile: profile)
                         }
                         .buttonStyle(.plain)
+                        .disabled(!HostProfileRowPresentation(profile: profile).canOpenWorkspaces)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
                                 if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
@@ -92,8 +93,12 @@ private struct HostProfileRow: View {
         switch presentation.statusKind {
         case .pending, .offline:
             return Color.secondary
+        case .loading:
+            return Color.blue
         case .trusted, .online:
             return Color.green
+        case .failed:
+            return Color.red
         }
     }
 }

@@ -28,10 +28,10 @@ public struct HostProfileFormModel: Equatable, Sendable {
     public var defaultDirectory: String
 
     public init(
-        connectionMethod: HostConnectionMethodDraft = .directSSH,
+        connectionMethod: HostConnectionMethodDraft = HostProfileFormModel.defaultRelayConnectionMethod,
         name: String = "",
         host: String = "",
-        port: String = "22",
+        port: String = "",
         username: String = "",
         authMethod: HostProfileAuthMethod = .password,
         password: String = "",
@@ -59,6 +59,19 @@ public struct HostProfileFormModel: Equatable, Sendable {
         self.deviceDisplayName = deviceDisplayName
         self.codexPath = codexPath
         self.defaultDirectory = defaultDirectory
+    }
+
+    public static var defaultRelayConnectionMethod: HostConnectionMethodDraft {
+        .relay(
+            RelayHostDraft(
+                hostAgentID: UUID(),
+                displayName: "Mac HostAgent",
+                userName: "",
+                pairingRecordID: "pending-pairing",
+                presence: .offline(),
+                diagnosticsSummary: "Pairing pending"
+            )
+        )
     }
 
     public init(profile: HostProfile) {
@@ -134,6 +147,23 @@ public struct HostProfileFormModel: Equatable, Sendable {
         if trimmed(port).isEmpty {
             port = "22"
         }
+    }
+
+    @discardableResult
+    public mutating func applyScannedPairingMaterial(_ material: String) -> Bool {
+        let material = trimmed(material)
+        guard !material.isEmpty else { return false }
+        if material.contains("://") {
+            guard material.hasPrefix("codexport://pair?") else { return false }
+        }
+        guard (try? RelayHostProductionPairingInput(
+            pairingMaterial: material,
+            deviceDisplayName: "Scanner validation"
+        )) != nil else {
+            return false
+        }
+        pairingMaterial = material
+        return true
     }
 
     public func makeRelayPairingInput(defaultDeviceDisplayName: String) throws -> RelayHostProductionPairingInput {
@@ -256,6 +286,7 @@ private extension HostConnectionMethodDraft {
                     deviceID: host.deviceID,
                     relayEndpointURL: host.relayEndpointURL,
                     presence: host.presence,
+                    readiness: host.readiness,
                     diagnosticsSummary: host.diagnosticsSummary
                 )
             )

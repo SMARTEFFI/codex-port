@@ -227,11 +227,13 @@ public struct PendingAttachment: Equatable, Sendable {
     public var name: String
     public var kind: PendingAttachmentKind
     public var data: Data
+    public var localCachePath: String?
 
-    public init(name: String, kind: PendingAttachmentKind, data: Data) {
+    public init(name: String, kind: PendingAttachmentKind, data: Data, localCachePath: String? = nil) {
         self.name = name
         self.kind = kind
         self.data = data
+        self.localCachePath = localCachePath
     }
 }
 
@@ -281,5 +283,38 @@ public final class AttachmentComposerBridge {
     public func attach(_ pending: [PendingAttachment], threadID: String, to composer: inout InputComposer) async throws {
         let uploaded = try await uploader.upload(pending, threadID: threadID)
         composer.attachments.append(contentsOf: uploaded)
+        composer.message.attachments.append(contentsOf: zip(pending, uploaded).map { pending, uploaded in
+            MessageAttachment(
+                id: pending.name,
+                kind: MessageAttachmentKind(pending.kind),
+                displayName: pending.name,
+                source: MessageAttachmentSource(pending: pending, uploaded: uploaded)
+            )
+        })
+    }
+}
+
+private extension MessageAttachmentKind {
+    init(_ pendingKind: PendingAttachmentKind) {
+        switch pendingKind {
+        case let .image(detail):
+            self = .image(contentType: nil, detail: detail)
+        case .file:
+            self = .file(contentType: nil)
+        }
+    }
+}
+
+private extension MessageAttachmentSource {
+    init(pending: PendingAttachment, uploaded: TurnAttachment) {
+        switch pending.kind {
+        case .image:
+            self = .localCache(path: pending.localCachePath ?? pending.name)
+        case .file:
+            switch uploaded {
+            case let .localImage(path, _), let .remoteFile(path):
+                self = .remoteHostPath(path)
+            }
+        }
     }
 }

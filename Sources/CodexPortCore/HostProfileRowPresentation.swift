@@ -4,20 +4,30 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
     public enum StatusKind: Equatable, Sendable {
         case pending
         case trusted
+        case loading
         case online
         case offline
+        case failed
     }
 
     public var title: String
     public var subtitle: String
     public var statusText: String
     public var statusKind: StatusKind
+    public var canOpenWorkspaces: Bool
 
-    public init(title: String, subtitle: String, statusText: String, statusKind: StatusKind) {
+    public init(
+        title: String,
+        subtitle: String,
+        statusText: String,
+        statusKind: StatusKind,
+        canOpenWorkspaces: Bool? = nil
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.statusText = statusText
         self.statusKind = statusKind
+        self.canOpenWorkspaces = canOpenWorkspaces ?? (statusKind == .trusted || statusKind == .online)
     }
 
     public init(profile: HostProfile) {
@@ -28,16 +38,23 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
             if profile.knownHostFingerprint == nil {
                 statusText = "待确认"
                 statusKind = .pending
+                canOpenWorkspaces = true
             } else {
                 statusText = "已信任"
                 statusKind = .trusted
+                canOpenWorkspaces = true
             }
         case let .relay(host):
             subtitle = "Mac: \(profile.name) · \(host.userName)"
-            switch host.presence {
-            case .online:
+            switch host.readiness {
+            case .ready:
                 statusText = "在线"
                 statusKind = .online
+                canOpenWorkspaces = true
+            case let .loading(stage):
+                statusText = Self.loadingStatusText(for: stage)
+                statusKind = .loading
+                canOpenWorkspaces = false
             case let .offline(lastSeenAt):
                 if let lastSeenAt {
                     statusText = "离线 · 最后在线 \(Self.utcTimestamp(lastSeenAt))"
@@ -45,7 +62,25 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
                     statusText = "离线"
                 }
                 statusKind = .offline
+                canOpenWorkspaces = false
+            case let .failed(_, message):
+                statusText = message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "连接失败" : message
+                statusKind = .failed
+                canOpenWorkspaces = false
             }
+        }
+    }
+
+    private static func loadingStatusText(for stage: RelayHostReadinessStage) -> String {
+        switch stage {
+        case .signaling:
+            return "连接 HostAgent..."
+        case .dataChannel:
+            return "建立 DataChannel..."
+        case .hostProtocol:
+            return "等待 Host 协议..."
+        case .threadList:
+            return "读取会话中..."
         }
     }
 

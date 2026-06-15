@@ -22,8 +22,9 @@ struct RootView: View {
                 profiles: profiles,
                 onOpenWorkspaces: { profile in
                     Task {
+                        markRelayReadiness(.loading(stage: .threadList), for: profile)
                         await connection.connect(profile: profile)
-                        profiles = store?.list() ?? profiles
+                        syncRelayReadiness(for: profile)
                         if connection.connectedRoute != nil {
                             path.append(AppRoute.workspaces)
                         }
@@ -67,7 +68,7 @@ struct RootView: View {
             }
             .onChange(of: connection.errorMessage) { _, message in
                 if message != nil {
-                    connection.isConnectionLogPresented = true
+                    connection.isConnectionLogPresented = connection.pendingHostKeyConfirmation != nil
                 }
             }
             .sheet(isPresented: $connection.isConnectionLogPresented) {
@@ -257,13 +258,47 @@ struct RootView: View {
         }
     }
 
+    private func markRelayReadiness(_ readiness: RelayHostReadiness, for profile: CodexPortCore.HostProfile) {
+        guard profile.connectionMethod.isRelay, let store else { return }
+        do {
+            let updated = try store.updateRelayReadiness(id: profile.id, readiness: readiness)
+            if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
+                profiles[index] = updated
+            } else {
+                profiles = store.list()
+            }
+        } catch {
+            loadError = String(describing: error)
+        }
+    }
+
+    private func syncRelayReadiness(for profile: CodexPortCore.HostProfile) {
+        guard profile.connectionMethod.isRelay, let readiness = connection.relayReadiness(for: profile) else {
+            profiles = store?.list() ?? profiles
+            return
+        }
+        if connection.connectedRoute != nil {
+            markRelayReadiness(readiness, for: profile)
+            return
+        }
+        if let message = connection.errorMessage {
+            markRelayReadiness(
+                .failed(reason: RelayReadinessFailureClassifier.reason(for: message), message: message),
+                for: profile
+            )
+            return
+        }
+        markRelayReadiness(readiness, for: profile)
+    }
+
     @MainActor
     private func runLaunchAutomationIfNeeded() async {
         guard !didRunLaunchAutomation, let launchAutomation, launchAutomation.plan.autoconnect else { return }
         guard let profile = profiles.first(where: { launchAutomation.plan.matches($0, seed: launchAutomation.seed) }) else { return }
         didRunLaunchAutomation = true
+        markRelayReadiness(.loading(stage: .threadList), for: profile)
         await connection.connect(profile: profile)
-        profiles = store?.list() ?? profiles
+        syncRelayReadiness(for: profile)
         guard connection.connectedRoute != nil else { return }
         path.append(AppRoute.workspaces)
         if let threadID = launchAutomationTargetThreadID() {
@@ -357,6 +392,28 @@ struct RootView: View {
 private struct RelayHostLaunchAutomation {
     var seed: RelayHostLaunchSeed
     var plan: RelayHostLaunchAutomationPlan
+}
+
+private enum RelayReadinessFailureClassifier {
+    static func reason(for message: String) -> RelayHostReadinessFailureReason {
+        let normalized = message.lowercased()
+        if normalized.contains("transport") || message.contains("尚未配置") {
+            return .transportUnavailable
+        }
+        if normalized.contains("version") || message.contains("版本") {
+            return .incompatibleVersion
+        }
+        if normalized.contains("pairing") || message.contains("配对") {
+            return .pairingInvalid
+        }
+        if normalized.contains("timeout") || message.contains("超时") {
+            return .threadListTimeout
+        }
+        if normalized.contains("hostagent") || message.contains("HostAgent") {
+            return .hostAgentUnavailable
+        }
+        return .unknown
+    }
 }
 
 private final class VolatileCredentialVault: CredentialVault {

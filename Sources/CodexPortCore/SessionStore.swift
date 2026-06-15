@@ -32,6 +32,7 @@ public enum TurnStatus: Equatable, Sendable {
 
 public enum VisibleItem: Equatable, Sendable {
     case userMessage(String)
+    case structuredUserMessage(StructuredUserMessage)
     case assistantMessage(String)
     case commandOutput(String)
     case fileChange(path: String, diff: String)
@@ -183,21 +184,34 @@ public final class SessionStore {
         visibleItems.append(item)
     }
 
+    public func appendOptimisticUserMessage(_ message: StructuredUserMessage) {
+        guard !message.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !message.attachments.isEmpty || !message.mentions.isEmpty else { return }
+        if message.mentions.isEmpty, message.attachments.isEmpty {
+            appendOptimisticUserMessage(message.body)
+            return
+        }
+        let item = VisibleItem.structuredUserMessage(message)
+        allHistoryItems.append(item)
+        visibleItems.append(item)
+    }
+
     public func send(composer: InputComposer) async throws {
         let threadID = thread?.id ?? runningThreadID ?? ""
+        let protocolPrompt = composer.message.protocolPrompt
+        let protocolAttachments = composer.attachments.isEmpty ? composer.message.protocolAttachments : composer.attachments
         if let runningTurnID {
             let response = try await protocolClient.steerTurn(
                 threadID: threadID,
                 turnID: runningTurnID,
-                prompt: composer.text,
-                attachments: composer.attachments
+                prompt: protocolPrompt,
+                attachments: protocolAttachments
             )
             self.runningTurnID = response.object?["turnId"]?.string ?? runningTurnID
         } else {
             let response = try await protocolClient.startTurn(
                 threadID: threadID,
-                prompt: composer.text,
-                attachments: composer.attachments,
+                prompt: protocolPrompt,
+                attachments: protocolAttachments,
                 model: composer.model,
                 reasoningEffort: composer.reasoningEffort,
                 permissionMode: composer.permissionMode,
@@ -209,9 +223,7 @@ public final class SessionStore {
         }
         runningThreadID = threadID
         status = .running
-        if !composer.text.isEmpty {
-            appendOptimisticUserMessage(composer.text)
-        }
+        appendOptimisticUserMessage(composer.message)
     }
 
     public func receive(notification: JSONRPCNotification) {
@@ -419,14 +431,15 @@ public final class SessionStore {
     }
 
     private func isDuplicateOptimisticUserMessage(_ item: VisibleItem) -> Bool {
-        guard case let .userMessage(text) = item else { return false }
-        guard case let .userMessage(lastText) = visibleItems.last else { return false }
+        guard let text = item.userMessageBody,
+              let lastText = visibleItems.last?.userMessageBody
+        else { return false }
         return lastText == text
     }
 
     private func optimisticItemsNotPresent(in historyItems: [VisibleItem]) -> [VisibleItem] {
         visibleItems.filter { item in
-            guard case .userMessage = item else { return false }
+            guard item.userMessageBody != nil else { return false }
             return !historyItems.contains(item)
         }
     }
@@ -612,6 +625,17 @@ extension TurnStatus {
 }
 
 extension VisibleItem {
+    var userMessageBody: String? {
+        switch self {
+        case let .userMessage(text):
+            return text
+        case let .structuredUserMessage(message):
+            return message.body
+        case .assistantMessage, .commandOutput, .fileChange:
+            return nil
+        }
+    }
+
     init(relayHistoryItem item: RelayThreadHistoryItem) {
         switch item {
         case let .userMessage(text):

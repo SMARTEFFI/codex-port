@@ -4,7 +4,7 @@ import Testing
 @testable import CodexPortShared
 
 @Test func hostProfileFormBuildsPasswordDraftWithAppServerStdioCommand() throws {
-    var form = HostProfileFormModel()
+    var form = HostProfileFormModel(connectionMethod: .directSSH, port: "22")
     form.name = "Public VPS"
     form.host = "203.0.113.10"
     form.port = "2222"
@@ -25,8 +25,15 @@ import Testing
     #expect(draft.defaultDirectory == "~/Projects")
 }
 
+@Test func hostProfileFormDefaultsNewHostToRelayConnection() {
+    let form = HostProfileFormModel()
+
+    #expect(form.connectionMethod.isRelayDraft == true)
+    #expect(form.port.isEmpty)
+}
+
 @Test func hostProfileFormBuildsPrivateKeyDraftWithLabelAndSecretMaterial() throws {
-    var form = HostProfileFormModel()
+    var form = HostProfileFormModel(connectionMethod: .directSSH, port: "22")
     form.name = "Mac"
     form.host = "mac.local"
     form.port = "22"
@@ -151,4 +158,24 @@ import Testing
     #expect(input.pairingTokenID == "pairing-token-ios")
     #expect(input.deviceDisplayName == "iPhone 17 Pro")
     #expect(input.streamEndpointURL == URL(string: "wss://codexport.smarteffi.net/v0/streams")!)
+}
+
+@Test func hostProfileFormAppliesValidPairingScanMaterialWithoutConsumingToken() throws {
+    var form = HostProfileFormModel()
+    form.pairingMaterial = "existing-token"
+
+    let applied = form.applyScannedPairingMaterial("codexport://pair?token=pairing-token-ios")
+
+    #expect(applied == true)
+    #expect(form.pairingMaterial == "codexport://pair?token=pairing-token-ios")
+    #expect(try form.makeRelayPairingInput(defaultDeviceDisplayName: "iPhone").pairingTokenID == "pairing-token-ios")
+}
+
+@Test func hostProfileFormIgnoresInvalidPairingScanMaterial() {
+    var form = HostProfileFormModel()
+    form.pairingMaterial = "existing-token"
+
+    #expect(form.applyScannedPairingMaterial("") == false)
+    #expect(form.applyScannedPairingMaterial("https://example.test/not-pairing") == false)
+    #expect(form.pairingMaterial == "existing-token")
 }

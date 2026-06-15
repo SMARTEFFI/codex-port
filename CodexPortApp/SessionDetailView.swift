@@ -1,4 +1,5 @@
 import CodexPortCore
+import Photos
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -37,6 +38,7 @@ struct SessionDetailView: View {
     @State private var isComposerExpanded = false
     @State private var transcriptRows: [TranscriptRow] = []
     @State private var scrollToBottomRequest = 0
+    @State private var imageGallery: ImageAttachmentGalleryState?
     private let pickedAttachmentHandler = PickedAttachmentHandler()
     private let bottomAnchorID = "session-bottom-anchor"
     private let liveTimelineRefreshIntervalNanos: UInt64 = 80_000_000
@@ -76,6 +78,9 @@ struct SessionDetailView: View {
                         ForEach(transcriptRows) { row in
                             SessionItemView(
                                 row: row,
+                                onOpenImage: { imageID in
+                                    openImageGallery(row: row, imageID: imageID)
+                                },
                                 onToggleTool: {
                                     toggleToolRow(row.id)
                                 }
@@ -159,6 +164,7 @@ struct SessionDetailView: View {
                     removePendingAttachment(at: index)
                 },
                 isCompact: isComposerCompact,
+                skillCatalog: .codexDefaults,
                 onExpand: expandComposer
             )
         }
@@ -264,10 +270,23 @@ struct SessionDetailView: View {
             guard let item else { return }
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self) {
-                    let pending = PendingAttachment(name: nextPhotoName(), kind: .image(detail: "high"), data: data)
+                    let pending = PickedAttachmentHandler.pickedImage(name: nextPhotoName(), data: data)
                     appendPendingAttachment(pending)
                 }
                 selectedPhoto = nil
+            }
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { imageGallery != nil },
+            set: { if !$0 { imageGallery = nil } }
+        )) {
+            if let gallery = imageGallery {
+                ImageAttachmentGalleryView(
+                    gallery: gallery,
+                    saver: UIKitPhotoSaver(),
+                    onUpdate: { imageGallery = $0 },
+                    onDismiss: { imageGallery = nil }
+                )
             }
         }
         .onChange(of: foregroundRefreshSignal) { _, _ in
@@ -292,12 +311,13 @@ struct SessionDetailView: View {
                 do {
                     if let relaySessionClientManager {
                         _ = try await relaySessionClientManager.sendPromptAndWaitForAcceptance(
-                            composer.text,
+                            composer.message.protocolPrompt,
                             timeout: .seconds(12)
                         )
                         updateTimeline(sessionStore.visibleItems, source: .liveUpdate)
                         composer.text = ""
                         composer.attachments.removeAll()
+                        composer.message = StructuredUserMessage(body: "")
                         pendingAttachments.removeAll()
                         composer.isRunning = true
                         collapseComposer()
@@ -324,6 +344,7 @@ struct SessionDetailView: View {
                     updateTimeline(sessionStore.visibleItems, source: .liveUpdate)
                     composer.text = ""
                     composer.attachments.removeAll()
+                    composer.message = StructuredUserMessage(body: "")
                     pendingAttachments.removeAll()
                     composer.isRunning = sessionStore.status == .running
                     collapseComposer()
@@ -337,6 +358,7 @@ struct SessionDetailView: View {
             updateTimeline(previewItems, source: .liveUpdate)
             composer.text = ""
             composer.attachments.removeAll()
+            composer.message = StructuredUserMessage(body: "")
             pendingAttachments.removeAll()
             composer.isRunning = true
             collapseComposer()
@@ -624,6 +646,46 @@ struct SessionDetailView: View {
         refreshTranscriptRows()
     }
 
+    private func openImageGallery(row: TranscriptRow, imageID: String) {
+        imageGallery = ImageAttachmentGalleryState(
+            items: row.imageAttachments,
+            opening: imageID
+        )
+        resolveRemoteGalleryImageIfNeeded(row: row, imageID: imageID)
+    }
+
+    private func resolveRemoteGalleryImageIfNeeded(row: TranscriptRow, imageID: String) {
+        guard
+            let item = row.imageAttachments.first(where: { $0.id == imageID }),
+            case let .remote(path) = item.availability,
+            let relaySessionClientManager
+        else {
+            return
+        }
+        let attachment = MessageAttachment(
+            id: item.id,
+            kind: .image(contentType: nil, detail: "high"),
+            displayName: item.displayName,
+            source: .remoteHostPath(path)
+        )
+        Task {
+            let resolver = RemoteImageAttachmentResolver(
+                reader: relaySessionClientManager,
+                cache: AppRemoteImageCache(),
+                maxBytes: 8_000_000
+            )
+            let resolvedAttachment = await resolver.resolve(attachment)
+            guard let resolvedItem = ImageAttachmentGalleryItem(attachment: resolvedAttachment) else {
+                return
+            }
+            await MainActor.run {
+                guard var gallery = imageGallery else { return }
+                gallery.replaceItem(resolvedItem)
+                imageGallery = gallery
+            }
+        }
+    }
+
     private func refreshTranscriptRows() {
         transcriptRows = TranscriptPresentation.rows(
             for: timeline.items,
@@ -723,6 +785,7 @@ private struct IdentifiedApprovalRequest: Identifiable {
 
 private struct SessionItemView: View {
     let row: TranscriptRow
+    let onOpenImage: (String) -> Void
     let onToggleTool: () -> Void
 
     var body: some View {
@@ -730,14 +793,7 @@ private struct SessionItemView: View {
         case .userBubble:
             HStack {
                 Spacer(minLength: 32)
-                Text(row.body)
-                    .font(.body)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.accentColor.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                UserMessageBubble(row: row, onOpenImage: onOpenImage)
             }
             .copyableTranscriptRow(row)
         case .assistantText:
@@ -808,6 +864,337 @@ private struct SessionItemView: View {
                 .padding(.vertical, 8)
                 .textSelection(.enabled)
                 .copyableTranscriptRow(row)
+        }
+    }
+}
+
+private struct UserMessageBubble: View {
+    let row: TranscriptRow
+    let onOpenImage: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !row.skillChips.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(row.skillChips, id: \.identifier) { chip in
+                        TranscriptSkillChipView(chip: chip)
+                    }
+                }
+            }
+
+            if !row.body.isEmpty {
+                Text(row.body)
+                    .font(.body)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+            }
+
+            if !row.imageAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(row.imageAttachments) { attachment in
+                            TranscriptImageThumbnail(item: attachment) {
+                                onOpenImage(attachment.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.accentColor.opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct TranscriptSkillChipView: View {
+    let chip: TranscriptSkillChip
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "sparkle")
+                .font(.caption.weight(.semibold))
+            Text(chip.displayName)
+                .font(.caption.weight(.semibold))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Color(.systemBackground).opacity(0.75))
+        .foregroundStyle(Color.accentColor)
+        .clipShape(Capsule())
+    }
+}
+
+private struct TranscriptImageThumbnail: View {
+    let item: ImageAttachmentGalleryItem
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            thumbnail
+                .frame(width: 104, height: 104)
+                .background(Color(.secondarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(alignment: .bottomLeading) {
+                    Text(item.displayName)
+                        .font(.caption2.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.thinMaterial)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(item.displayName)
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        switch item.availability {
+        case let .available(localPath):
+            if let image = UIImage(contentsOfFile: localPath) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                unavailableView("图片不可用")
+            }
+        case .remote:
+            unavailableView("待拉取")
+        case let .unavailable(reason):
+            unavailableView(reason)
+        }
+    }
+
+    private func unavailableView(_ reason: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: "photo")
+                .font(.title3)
+            Text(reason)
+                .font(.caption2)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(8)
+    }
+}
+
+private struct FlowLayout<Content: View>: View {
+    let spacing: CGFloat
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            content
+        }
+    }
+}
+
+private struct ImageAttachmentGalleryView: View {
+    var gallery: ImageAttachmentGalleryState
+    let saver: PhotoSaving
+    let onUpdate: (ImageAttachmentGalleryState) -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let item = gallery.currentItem {
+                GalleryImageContent(item: item)
+                    .padding(.horizontal, 18)
+            }
+
+            VStack {
+                HStack(spacing: 12) {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.headline)
+                            .frame(width: 42, height: 42)
+                            .background(Color.white.opacity(0.16))
+                            .clipShape(Circle())
+                    }
+                    .accessibilityLabel("关闭")
+
+                    Spacer()
+
+                    Button {
+                        Task {
+                            var nextGallery = gallery
+                            await nextGallery.saveCurrentImage(using: saver)
+                            await MainActor.run {
+                                onUpdate(nextGallery)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.headline)
+                            .frame(width: 42, height: 42)
+                            .background(Color.white.opacity(0.16))
+                            .clipShape(Circle())
+                    }
+                    .accessibilityLabel("保存图片")
+                }
+                .foregroundStyle(.white)
+                .padding()
+
+                Spacer()
+
+                HStack(spacing: 16) {
+                    Button {
+                        var nextGallery = gallery
+                        nextGallery.movePrevious()
+                        onUpdate(nextGallery)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 48, height: 48)
+                            .background(Color.white.opacity(0.16))
+                            .clipShape(Circle())
+                    }
+                    .disabled(gallery.currentIndex == 0)
+
+                    Text(gallery.currentItem?.displayName ?? "图片")
+                        .font(.footnote.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+
+                    Button {
+                        var nextGallery = gallery
+                        nextGallery.moveNext()
+                        onUpdate(nextGallery)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 48, height: 48)
+                            .background(Color.white.opacity(0.16))
+                            .clipShape(Circle())
+                    }
+                    .disabled(gallery.currentIndex >= gallery.items.count - 1)
+                }
+                .foregroundStyle(.white)
+                .padding()
+            }
+        }
+        .alert(
+            gallery.saveFeedback?.title ?? "保存图片",
+            isPresented: Binding(
+                get: { gallery.saveFeedback != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        var nextGallery = gallery
+                        nextGallery.clearSaveFeedback()
+                        onUpdate(nextGallery)
+                    }
+                }
+            )
+        ) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(gallery.saveFeedback?.message ?? "")
+        }
+    }
+}
+
+private struct GalleryImageContent: View {
+    let item: ImageAttachmentGalleryItem
+
+    var body: some View {
+        switch item.availability {
+        case let .available(localPath):
+            if let image = UIImage(contentsOfFile: localPath) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                GalleryPlaceholder(systemImage: "photo", message: "图片不可用")
+            }
+        case .remote:
+            GalleryPlaceholder(systemImage: "icloud.and.arrow.down", message: "远端图片待拉取")
+        case let .unavailable(reason):
+            GalleryPlaceholder(systemImage: "exclamationmark.triangle", message: reason)
+        }
+    }
+}
+
+private struct GalleryPlaceholder: View {
+    let systemImage: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.largeTitle)
+            Text(message)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.white.opacity(0.78))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private final class UIKitPhotoSaver: PhotoSaving {
+    func saveImage(atLocalPath path: String) async -> Result<Void, PhotoSaveError> {
+        guard let image = UIImage(contentsOfFile: path) else {
+            return .failure(.systemFailure("图片不可用"))
+        }
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            return .failure(.permissionDenied)
+        }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            }
+            return .success(())
+        } catch {
+            return .failure(.systemFailure("保存图片失败"))
+        }
+    }
+}
+
+private final class AppRemoteImageCache: RemoteImageCaching {
+    func store(_ content: RemoteFileContent, attachmentID: String) async -> Result<String, RemoteImageCacheError> {
+        do {
+            let directory = try FileManager.default.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            ).appendingPathComponent("RemoteImageAttachments", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let extensionName = URL(fileURLWithPath: content.path).pathExtension
+            let fileName = extensionName.isEmpty ? attachmentID : "\(attachmentID).\(extensionName)"
+            let fileURL = directory.appendingPathComponent(fileName)
+            try content.data.write(to: fileURL, options: [.atomic])
+            return .success(fileURL.path)
+        } catch {
+            return .failure(.writeFailed("图片缓存失败"))
+        }
+    }
+}
+
+private extension ImageAttachmentSaveFeedback {
+    var title: String {
+        switch self {
+        case .success:
+            return "保存成功"
+        case .failure:
+            return "保存失败"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case let .success(message), let .failure(message):
+            return message
         }
     }
 }

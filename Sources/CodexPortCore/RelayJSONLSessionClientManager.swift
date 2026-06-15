@@ -111,6 +111,20 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
         }
     }
 
+    public func readRemoteFile(path: String, maxBytes: Int) async -> Result<RemoteFileContent, RemoteImageReadError> {
+        do {
+            let client = try await attach()
+            let result = await client.readRemoteFile(path: path, maxBytes: maxBytes)
+            if case let .failure(error) = result,
+               case .transport = error {
+                discardCurrentClient(client)
+            }
+            return result
+        } catch {
+            return .failure(.transport(String(describing: error)))
+        }
+    }
+
     public func stop() {
         lock.withLock {
             let client = currentClient
@@ -173,3 +187,5 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
         NSURLErrorDNSLookupFailed,
     ]
 }
+
+extension RelayJSONLSessionClientManager: RemoteImageReading {}

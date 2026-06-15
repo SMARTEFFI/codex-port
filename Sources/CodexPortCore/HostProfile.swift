@@ -60,6 +60,13 @@ public enum HostProfileDraftAuth: Equatable, Sendable {
 public enum HostConnectionMethodDraft: Equatable, Sendable {
     case directSSH
     case relay(RelayHostDraft)
+
+    public var isRelayDraft: Bool {
+        if case .relay = self {
+            return true
+        }
+        return false
+    }
 }
 
 public struct RelayHostDraft: Equatable, Sendable {
@@ -70,6 +77,7 @@ public struct RelayHostDraft: Equatable, Sendable {
     public var deviceID: UUID?
     public var relayEndpointURL: URL?
     public var presence: RelayHostPresence
+    public var readiness: RelayHostReadiness
     public var diagnosticsSummary: String
 
     public init(
@@ -80,6 +88,7 @@ public struct RelayHostDraft: Equatable, Sendable {
         deviceID: UUID? = nil,
         relayEndpointURL: URL? = nil,
         presence: RelayHostPresence,
+        readiness: RelayHostReadiness? = nil,
         diagnosticsSummary: String
     ) {
         self.hostAgentID = hostAgentID
@@ -89,6 +98,7 @@ public struct RelayHostDraft: Equatable, Sendable {
         self.deviceID = deviceID
         self.relayEndpointURL = relayEndpointURL
         self.presence = presence
+        self.readiness = readiness ?? RelayHostReadiness.default(for: presence)
         self.diagnosticsSummary = diagnosticsSummary
     }
 }
@@ -119,6 +129,7 @@ public struct RelayHost: Equatable, Sendable {
     public var deviceID: UUID?
     public var relayEndpointURL: URL?
     public var presence: RelayHostPresence
+    public var readiness: RelayHostReadiness
     public var diagnosticsSummary: String
 
     public init(
@@ -129,6 +140,7 @@ public struct RelayHost: Equatable, Sendable {
         deviceID: UUID? = nil,
         relayEndpointURL: URL? = nil,
         presence: RelayHostPresence,
+        readiness: RelayHostReadiness? = nil,
         diagnosticsSummary: String
     ) {
         self.hostAgentID = hostAgentID
@@ -138,8 +150,41 @@ public struct RelayHost: Equatable, Sendable {
         self.deviceID = deviceID
         self.relayEndpointURL = relayEndpointURL
         self.presence = presence
+        self.readiness = readiness ?? RelayHostReadiness.default(for: presence)
         self.diagnosticsSummary = diagnosticsSummary
     }
+}
+
+public enum RelayHostReadiness: Equatable, Sendable {
+    case offline(lastSeenAt: Date?)
+    case loading(stage: RelayHostReadinessStage)
+    case ready(loadedThreadCount: Int)
+    case failed(reason: RelayHostReadinessFailureReason, message: String)
+
+    public static func `default`(for presence: RelayHostPresence) -> RelayHostReadiness {
+        switch presence {
+        case let .offline(lastSeenAt):
+            return .offline(lastSeenAt: lastSeenAt)
+        case .online:
+            return .loading(stage: .threadList)
+        }
+    }
+}
+
+public enum RelayHostReadinessStage: String, Codable, Equatable, Sendable {
+    case signaling
+    case dataChannel
+    case hostProtocol
+    case threadList
+}
+
+public enum RelayHostReadinessFailureReason: String, Codable, Equatable, Sendable {
+    case transportUnavailable
+    case incompatibleVersion
+    case pairingInvalid
+    case threadListTimeout
+    case hostAgentUnavailable
+    case unknown
 }
 
 public struct HostProfile: Equatable, Identifiable, Sendable {
@@ -280,10 +325,23 @@ public final class HostProfileStore {
         }
         profiles[index].knownHostFingerprint = fingerprint
     }
+
+    public func updateRelayReadiness(profileID: UUID, readiness: RelayHostReadiness) throws -> HostProfile {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            throw HostProfileStoreError.notFound
+        }
+        guard case var .relay(relayHost) = profiles[index].connectionMethod else {
+            throw HostProfileStoreError.notRelayHost
+        }
+        relayHost.readiness = readiness
+        profiles[index].connectionMethod = .relay(relayHost)
+        return profiles[index]
+    }
 }
 
 public enum HostProfileStoreError: Error, Equatable {
     case notFound
+    case notRelayHost
 }
 
 extension HostProfileDraftAuth {
@@ -320,6 +378,7 @@ extension RelayHost {
             deviceID: draft.deviceID,
             relayEndpointURL: draft.relayEndpointURL,
             presence: draft.presence,
+            readiness: draft.readiness,
             diagnosticsSummary: draft.diagnosticsSummary
         )
     }

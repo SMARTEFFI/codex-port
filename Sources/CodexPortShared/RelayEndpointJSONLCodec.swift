@@ -5,6 +5,7 @@ public enum RelayEndpointJSONLMessage: Equatable, Sendable {
     case writeStatus(clientID: String, sessionID: String, writeID: String, RelayWriteStatus)
     case threadList(clientID: String, requestID: String, threads: [RelayThreadSummarySnapshot], nextCursor: String?)
     case threadHistoryPage(clientID: String, RelayThreadHistoryPage)
+    case fileContent(clientID: String, RelayRemoteFileContent)
     case error(clientID: String?, reason: String)
 
     public var telemetryDescription: String {
@@ -17,9 +18,33 @@ public enum RelayEndpointJSONLMessage: Equatable, Sendable {
             "threadList client=\(clientID) request=\(requestID) count=\(threads.count)"
         case let .threadHistoryPage(clientID, page):
             "threadHistoryPage client=\(clientID) request=\(page.requestID) thread=\(page.threadID) items=\(page.items.count) status=\(page.status.rawValue)"
+        case let .fileContent(clientID, content):
+            "fileContent client=\(clientID) request=\(content.requestID) pathBytes=\(content.path.utf8.count) bytes=\(content.byteCount)"
         case let .error(clientID, reason):
             "error client=\(clientID ?? "none") reasonBytes=\(reason.utf8.count)"
         }
+    }
+}
+
+public struct RelayRemoteFileContent: Codable, Equatable, Sendable {
+    public var requestID: String
+    public var path: String
+    public var contentType: String?
+    public var byteCount: Int
+    public var dataBase64: String
+
+    public init(
+        requestID: String,
+        path: String,
+        contentType: String?,
+        byteCount: Int,
+        dataBase64: String
+    ) {
+        self.requestID = requestID
+        self.path = path
+        self.contentType = contentType
+        self.byteCount = byteCount
+        self.dataBase64 = dataBase64
     }
 }
 
@@ -104,6 +129,21 @@ public enum RelayEndpointJSONLCodec {
         return try encode(object)
     }
 
+    public static func encodeFileContent(_ content: RelayRemoteFileContent, clientID: String) throws -> String {
+        var object: [String: Any] = [
+            "type": "fileContent",
+            "clientID": clientID,
+            "requestID": content.requestID,
+            "path": content.path,
+            "byteCount": content.byteCount,
+            "dataBase64": content.dataBase64,
+        ]
+        if let contentType = content.contentType {
+            object["contentType"] = contentType
+        }
+        return try encode(object)
+    }
+
     public static func decodeLine(_ line: String) throws -> RelayEndpointJSONLMessage {
         guard let data = line.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -140,6 +180,17 @@ public enum RelayEndpointJSONLCodec {
                     items: try historyItems(from: object),
                     status: RelayThreadRunStatus(rawValue: try string("status", in: object)) ?? .completed,
                     nextCursor: object["nextCursor"] as? String
+                )
+            )
+        case "fileContent":
+            return .fileContent(
+                clientID: try string("clientID", in: object),
+                RelayRemoteFileContent(
+                    requestID: try string("requestID", in: object),
+                    path: try string("path", in: object),
+                    contentType: object["contentType"] as? String,
+                    byteCount: int("byteCount", in: object) ?? 0,
+                    dataBase64: try string("dataBase64", in: object)
                 )
             )
         case "error":
@@ -252,6 +303,19 @@ public enum RelayEndpointJSONLCodec {
             throw RelayEndpointJSONLCodecError.missingField(key)
         }
         return value
+    }
+
+    private static func int(_ key: String, in object: [String: Any]) -> Int? {
+        if let value = object[key] as? Int {
+            return value
+        }
+        if let value = object[key] as? Double {
+            return Int(value)
+        }
+        if let value = object[key] as? String {
+            return Int(value)
+        }
+        return nil
     }
 
     private static func writeStatus(_ value: String, reason: String? = nil) throws -> RelayWriteStatus {

@@ -141,6 +141,40 @@ import Testing
     #expect(try repository.load().first?.connectionMethod.relayHost?.relayEndpointURL == URL(string: "wss://relay.example.test/v0/streams")!)
 }
 
+@Test func persistentHostProfileStorePersistsRelayHostReadinessUpdates() throws {
+    let directory = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString)
+    let url = directory.appending(path: "profiles.json")
+    let repository = FileHostProfileRepository(fileURL: url)
+    let store = try PersistentHostProfileStore(repository: repository, credentialVault: InMemoryCredentialVault())
+    let profile = try store.create(HostProfileDraft(
+        connectionMethod: .relay(
+            RelayHostDraft(
+                hostAgentID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                displayName: "Mac Studio Agent",
+                userName: "chenm",
+                pairingRecordID: "pairing-record",
+                presence: .online(activeConnectionCount: 1),
+                readiness: .loading(stage: .threadList),
+                diagnosticsSummary: "Host Agent online"
+            )
+        ),
+        name: "Mac Studio Relay",
+        host: "mac-studio.local",
+        port: 22,
+        username: "chenm",
+        auth: .none,
+        codexPath: "codex",
+        startupCommand: "",
+        defaultDirectory: "~/Projects"
+    ))
+
+    let updated = try store.updateRelayReadiness(id: profile.id, readiness: .ready(loadedThreadCount: 4))
+    let reloaded = try PersistentHostProfileStore(repository: FileHostProfileRepository(fileURL: url), credentialVault: InMemoryCredentialVault())
+
+    #expect(updated.connectionMethod.relayHost?.readiness == .ready(loadedThreadCount: 4))
+    #expect(reloaded.list().first?.connectionMethod.relayHost?.readiness == .ready(loadedThreadCount: 4))
+}
+
 @Test func persistentHostProfileStoreSeedsRelayHostOnlyOnceForAFKVerification() throws {
     let directory = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString)
     let repository = FileHostProfileRepository(fileURL: directory.appending(path: "profiles.json"))

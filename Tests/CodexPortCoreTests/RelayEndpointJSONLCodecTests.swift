@@ -145,3 +145,21 @@ import Testing
     #expect(!message.telemetryDescription.contains("older secret question"))
     #expect(!message.telemetryDescription.contains("older secret answer"))
 }
+
+@Test func relayEndpointJSONLCodecRoundTripsRemoteFileContentWithoutLeakingDataTelemetry() throws {
+    let content = RelayRemoteFileContent(
+        requestID: "file-1",
+        path: "/Users/chenm/Desktop/screen.png",
+        contentType: "image/png",
+        byteCount: 4,
+        dataBase64: "iVBORw=="
+    )
+
+    let line = try RelayEndpointJSONLCodec.encodeFileContent(content, clientID: "iphone-a")
+    let message = try RelayEndpointJSONLCodec.decodeLine(line)
+
+    #expect(message == .fileContent(clientID: "iphone-a", content))
+    #expect(message.telemetryDescription.contains("fileContent"))
+    #expect(message.telemetryDescription.contains("bytes=4"))
+    #expect(!message.telemetryDescription.contains("iVBORw"))
+}

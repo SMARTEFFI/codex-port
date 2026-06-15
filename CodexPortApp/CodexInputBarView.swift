@@ -12,6 +12,7 @@ struct CodexInputBarView: View {
     let onAttachFile: () -> Void
     let onRemoveAttachment: (Int) -> Void
     var isCompact = false
+    var skillCatalog: SkillCatalog = .empty
     var onExpand: () -> Void = {}
     @State private var pendingPermissionMode: PermissionMode?
     @State private var fullAccessConfirmationPresented = false
@@ -69,13 +70,24 @@ struct CodexInputBarView: View {
             if hasComposerChips {
                 ComposerChipStrip(
                     isPlanMode: composer.collaborationMode == .plan,
+                    skillMentions: composer.message.mentions,
                     attachments: pendingAttachments,
                     onExitPlanMode: {
                         composer.collaborationMode = .default
                     },
+                    onRemoveSkillMention: { id in
+                        composer.removeSkillMention(id: id)
+                    },
                     onRemoveAttachment: onRemoveAttachment
                 )
             }
+
+            SkillSuggestionStrip(
+                suggestions: composer.skillSuggestions(in: skillCatalog),
+                onSelect: { mention in
+                    composer.selectSkillMention(mention)
+                }
+            )
 
             TextField("向 Codex 提问", text: $composer.text, axis: .vertical)
                 .lineLimit(1...5)
@@ -247,7 +259,7 @@ struct CodexInputBarView: View {
     }
 
     private var hasComposerChips: Bool {
-        composer.collaborationMode == .plan || !pendingAttachments.isEmpty
+        composer.collaborationMode == .plan || !composer.message.mentions.isEmpty || !pendingAttachments.isEmpty
     }
 
     private var compactPromptText: String {
@@ -281,8 +293,10 @@ struct CodexInputBarView: View {
 
 private struct ComposerChipStrip: View {
     let isPlanMode: Bool
+    let skillMentions: [SkillMention]
     let attachments: [PendingAttachment]
     let onExitPlanMode: () -> Void
+    let onRemoveSkillMention: (String) -> Void
     let onRemoveAttachment: (Int) -> Void
 
     var body: some View {
@@ -290,6 +304,11 @@ private struct ComposerChipStrip: View {
             HStack(spacing: 8) {
                 if isPlanMode {
                     PlanModeChip(onRemove: onExitPlanMode)
+                }
+                ForEach(skillMentions, id: \.identifier) { mention in
+                    SkillMentionChip(mention: mention) {
+                        onRemoveSkillMention(mention.identifier)
+                    }
                 }
                 ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
                     AttachmentPreviewChip(
@@ -303,6 +322,69 @@ private struct ComposerChipStrip: View {
             .padding(.vertical, 2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SkillSuggestionStrip: View {
+    let suggestions: [SkillMention]
+    let onSelect: (SkillMention) -> Void
+
+    var body: some View {
+        if !suggestions.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(suggestions, id: \.identifier) { suggestion in
+                        Button {
+                            onSelect(suggestion)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "sparkle")
+                                    .font(.caption.weight(.semibold))
+                                Text(suggestion.displayName)
+                                    .font(.callout.weight(.medium))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.accentColor.opacity(0.12))
+                            .foregroundStyle(Color.accentColor)
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct SkillMentionChip: View {
+    let mention: SkillMention
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkle")
+                .font(.headline)
+                .foregroundStyle(Color.accentColor)
+
+            Text(mention.displayName)
+                .font(.callout.weight(.medium))
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("移除 \(mention.displayName)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color(.secondarySystemFill))
+        .clipShape(Capsule())
     }
 }
 
