@@ -176,11 +176,21 @@ public struct WorkspaceDayThreadGroup: Equatable, Identifiable, Sendable {
     public var id: String
     public var title: String
     public var threads: [ThreadSummary]
+    public var hiddenThreadCount: Int
+    public var allThreads: [ThreadSummary]
 
-    public init(id: String, title: String, threads: [ThreadSummary]) {
+    public init(
+        id: String,
+        title: String,
+        threads: [ThreadSummary],
+        hiddenThreadCount: Int = 0,
+        allThreads: [ThreadSummary]? = nil
+    ) {
         self.id = id
         self.title = title
         self.threads = threads
+        self.hiddenThreadCount = hiddenThreadCount
+        self.allThreads = allThreads ?? threads
     }
 }
 
@@ -358,7 +368,8 @@ public final class WorkspaceListStore {
     private static func dayThreadGroups(
         for threads: [ThreadSummary],
         now: Date,
-        calendar: Calendar
+        calendar: Calendar,
+        limit: Int = 5
     ) -> [WorkspaceDayThreadGroup] {
         let grouped = Dictionary(grouping: threads) { thread in
             calendar.startOfDay(for: thread.updatedAt)
@@ -379,15 +390,18 @@ public final class WorkspaceListStore {
             } else {
                 title = formatter.string(from: day)
             }
+            let sortedThreads = (grouped[day] ?? []).sorted { left, right in
+                if left.updatedAt == right.updatedAt {
+                    return left.id < right.id
+                }
+                return left.updatedAt > right.updatedAt
+            }
             return WorkspaceDayThreadGroup(
                 id: String(Int(day.timeIntervalSince1970)),
                 title: title,
-                threads: (grouped[day] ?? []).sorted { left, right in
-                    if left.updatedAt == right.updatedAt {
-                        return left.id < right.id
-                    }
-                    return left.updatedAt > right.updatedAt
-                }
+                threads: Array(sortedThreads.prefix(limit)),
+                hiddenThreadCount: max(sortedThreads.count - limit, 0),
+                allThreads: sortedThreads
             )
         }
     }

@@ -28,6 +28,15 @@ public struct SessionTimelineState: Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func applyForegroundRefreshItems(_ items: [VisibleItem]) -> SessionScrollAnchor {
+        if items.isEmpty && !self.items.isEmpty {
+            return .preserve
+        }
+        self.items = items
+        return isPinnedToBottom ? .bottom : .preserve
+    }
+
+    @discardableResult
     public mutating func prependHistoryItems(_ items: [VisibleItem]) -> SessionScrollAnchor {
         self.items = items
         isPinnedToBottom = false

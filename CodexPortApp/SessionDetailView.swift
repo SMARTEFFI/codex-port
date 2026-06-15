@@ -9,9 +9,12 @@ struct SessionDetailView: View {
     let isNewThread: Bool
     let protocolClient: CodexProtocolClient?
     let events: AppServerEventSource?
+    let route: ConnectedSessionRoute?
     let foregroundRefreshSignal: Int
+    let relayAutoprompt: String?
     @State private var composer = InputComposer(modelDisplay: "5.5 超高", capabilities: .appDefault)
     @State private var sessionStore: SessionStore?
+    @State private var relaySessionClientManager: RelayJSONLSessionClientManager?
     @State private var timeline = SessionTimelineState()
     @State private var errorMessage: String?
     @State private var isLoadingHistory = false
@@ -25,6 +28,8 @@ struct SessionDetailView: View {
     @State private var serverRequestTask: Task<Void, Never>?
     @State private var liveTimelineRefreshTask: Task<Void, Never>?
     @State private var syncPollingTask: Task<Void, Never>?
+    @State private var relayTimelinePollingTask: Task<Void, Never>?
+    @State private var didSendRelayAutoprompt = false
     @State private var isRefreshingCurrentThread = false
     @State private var viewportHeight: CGFloat = 0
     @State private var timelineBottomY: CGFloat = 0
@@ -42,18 +47,21 @@ struct SessionDetailView: View {
         isNewThread: Bool = false,
         protocolClient: CodexProtocolClient?,
         events: AppServerEventSource? = nil,
-        foregroundRefreshSignal: Int = 0
+        route: ConnectedSessionRoute? = nil,
+        foregroundRefreshSignal: Int = 0,
+        relayAutoprompt: String? = nil
     ) {
         self.threadID = threadID
         self.isNewThread = isNewThread
         self.protocolClient = protocolClient
         self.events = events
+        self.route = route
         self.foregroundRefreshSignal = foregroundRefreshSignal
+        self.relayAutoprompt = relayAutoprompt
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if let sessionStore, sessionStore.hasEarlierHistory {
@@ -131,8 +139,8 @@ struct SessionDetailView: View {
                     timelineBottomY = bottomY
                     updatePinnedState()
                 }
-            }
-
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             CodexInputBarView(
                 composer: $composer,
                 pendingAttachments: pendingAttachments,
@@ -158,7 +166,36 @@ struct SessionDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             guard timeline.items.isEmpty else { return }
-            guard let protocolClient else {
+            if let route, route.isRelay {
+                guard let context = route.relaySessionContext(threadID: threadID) else {
+                    isLoadingHistory = false
+                    errorMessage = "Relay 会话尚未在当前 Host 列表中。请返回工作区刷新会话列表后重试。"
+                    return
+                }
+                let store = context.sessionStore
+                let manager = context.clientManager
+                sessionStore = store
+                relaySessionClientManager = manager
+                if !store.visibleItems.isEmpty {
+                    isLoadingHistory = false
+                    updateTimeline(store.visibleItems, source: .initialLoad)
+                } else {
+                    isLoadingHistory = true
+                }
+                do {
+                    _ = try await manager.attach()
+                    startRelayTimelinePolling(store: store)
+                    await sendRelayAutopromptIfNeeded(using: manager)
+                } catch RelayJSONLSessionClientManagerError.clientUnavailable {
+                    isLoadingHistory = false
+                    updateTimeline([.assistantMessage("Relay transport 尚未配置，无法连接 Host Agent。")], source: .initialLoad)
+                } catch {
+                    isLoadingHistory = false
+                    errorMessage = sessionErrorMessage(for: error)
+                }
+                return
+            }
+            guard let protocolClient = route?.directProtocolClient ?? protocolClient else {
                 updateTimeline([.assistantMessage("已打开会话 \(threadID)。")], source: .initialLoad)
                 return
             }
@@ -173,7 +210,7 @@ struct SessionDetailView: View {
                 }
                 sessionStore = store
                 updateTimeline(store.visibleItems, source: .initialLoad)
-                listenForSessionEvents(store: store)
+                listenForSessionEvents(store: store, events: route?.directEvents ?? events)
                 if !isNewThread {
                     startCurrentThreadSyncPolling(store: store)
                 }
@@ -190,13 +227,18 @@ struct SessionDetailView: View {
             serverRequestTask?.cancel()
             liveTimelineRefreshTask?.cancel()
             syncPollingTask?.cancel()
+            relayTimelinePollingTask?.cancel()
             notificationTask = nil
             serverRequestTask = nil
             liveTimelineRefreshTask = nil
             syncPollingTask = nil
+            relayTimelinePollingTask = nil
+            relaySessionClientManager = nil
             if let sessionStore {
-                Task {
-                    await sessionStore.close()
+                if route?.isRelay != true {
+                    Task {
+                        await sessionStore.close()
+                    }
                 }
             }
         }
@@ -248,6 +290,23 @@ struct SessionDetailView: View {
         if let sessionStore {
             Task {
                 do {
+                    if let relaySessionClientManager {
+                        _ = try await relaySessionClientManager.sendPromptAndWaitForAcceptance(
+                            composer.text,
+                            timeout: .seconds(12)
+                        )
+                        updateTimeline(sessionStore.visibleItems, source: .liveUpdate)
+                        composer.text = ""
+                        composer.attachments.removeAll()
+                        pendingAttachments.removeAll()
+                        composer.isRunning = true
+                        collapseComposer()
+                        return
+                    }
+                    if route?.isRelay == true {
+                        errorMessage = "Relay transport 尚未配置，消息未发送。"
+                        return
+                    }
                     if let protocolClient, !pendingAttachments.isEmpty {
                         let bridge = AttachmentComposerBridge(uploader: AttachmentUploader(
                             protocolClient: protocolClient,
@@ -320,6 +379,12 @@ struct SessionDetailView: View {
         }
         Task {
             do {
+                if let relaySessionClientManager {
+                    try await relaySessionClientManager.interrupt()
+                    composer.isRunning = false
+                    refreshTranscriptRows()
+                    return
+                }
                 try await sessionStore.interrupt()
                 composer.isRunning = false
                 refreshTranscriptRows()
@@ -333,7 +398,11 @@ struct SessionDetailView: View {
         guard let sessionStore, !isNewThread else { return }
         Task {
             do {
-                try await sessionStore.loadEarlierHistory()
+                if let relaySessionClientManager, let cursor = sessionStore.earlierHistoryCursor {
+                    _ = try await relaySessionClientManager.loadEarlierHistory(cursor: cursor)
+                } else {
+                    try await sessionStore.loadEarlierHistory()
+                }
                 updateTimeline(sessionStore.visibleItems, source: .historyPrepend)
             } catch {
                 errorMessage = sessionErrorMessage(for: error)
@@ -350,6 +419,13 @@ struct SessionDetailView: View {
         if let expectedStore, sessionStore !== expectedStore {
             return
         }
+        if route?.isRelay == true {
+            if timeline.items.isEmpty && !sessionStore.visibleItems.isEmpty {
+                updateTimeline(sessionStore.visibleItems, source: .foregroundRefresh)
+            }
+            composer.isRunning = sessionStore.status == .running
+            return
+        }
         guard !isRefreshingCurrentThread else { return }
         isRefreshingCurrentThread = true
         let previousItems = sessionStore.visibleItems
@@ -360,7 +436,7 @@ struct SessionDetailView: View {
         do {
             try await sessionStore.open(threadID: threadID)
             if previousItems != sessionStore.visibleItems || previousStatus != sessionStore.status {
-                updateTimeline(sessionStore.visibleItems, source: .liveUpdate)
+                updateTimeline(sessionStore.visibleItems, source: .foregroundRefresh)
             }
             composer.isRunning = sessionStore.status == .running
         } catch {
@@ -393,7 +469,7 @@ struct SessionDetailView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
-    private func listenForSessionEvents(store: SessionStore) {
+    private func listenForSessionEvents(store: SessionStore, events: AppServerEventSource?) {
         guard let events else { return }
         notificationTask?.cancel()
         serverRequestTask?.cancel()
@@ -428,6 +504,51 @@ struct SessionDetailView: View {
         }
     }
 
+    @MainActor
+    private func startRelayTimelinePolling(store: SessionStore) {
+        relayTimelinePollingTask?.cancel()
+        relayTimelinePollingTask = Task {
+            var previousItems = store.visibleItems
+            var previousStatus = store.status
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: liveTimelineRefreshIntervalNanos)
+                guard !Task.isCancelled else { return }
+                if store.visibleItems != previousItems || store.status != previousStatus {
+                    previousItems = store.visibleItems
+                    previousStatus = store.status
+                    if !store.visibleItems.isEmpty || store.status != .running {
+                        isLoadingHistory = false
+                    }
+                    updateTimeline(store.visibleItems, source: .liveUpdate)
+                    composer.isRunning = store.status == .running
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func sendRelayAutopromptIfNeeded(using relayClientManager: RelayJSONLSessionClientManager) async {
+        guard !didSendRelayAutoprompt,
+              let relayAutoprompt,
+              !relayAutoprompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return
+        }
+        didSendRelayAutoprompt = true
+        do {
+            _ = try await relayClientManager.sendPromptAndWaitForAcceptance(
+                relayAutoprompt,
+                writeID: "afk-autoprompt-\(UUID().uuidString)",
+                timeout: .seconds(12)
+            )
+            isLoadingHistory = false
+            updateTimeline(sessionStore?.visibleItems ?? [], source: .liveUpdate)
+            composer.isRunning = true
+        } catch {
+            errorMessage = sessionErrorMessage(for: error)
+        }
+    }
+
     private func scheduleLiveTimelineRefresh(store: SessionStore) {
         guard liveTimelineRefreshTask == nil else { return }
         liveTimelineRefreshTask = Task {
@@ -454,6 +575,8 @@ struct SessionDetailView: View {
             anchor = timeline.prependHistoryItems(items)
         case .liveUpdate:
             anchor = timeline.applyLiveItems(items)
+        case .foregroundRefresh:
+            anchor = timeline.applyForegroundRefreshItems(items)
         }
         refreshTranscriptRows()
         if anchor == .bottom {
@@ -523,6 +646,22 @@ struct SessionDetailView: View {
             }
             return "Codex 返回错误：\(message)"
         }
+        if RelayJSONLSessionClientManager.shouldRecreateClient(after: error) {
+            return "Relay 连接已中断，已自动重连但未完成本次请求。请确认 HostAgent 在线后重试。"
+        }
+        if let relayError = error as? RelayJSONLSessionClientError {
+            switch relayError {
+            case .timedOut:
+                return "发送后未收到 HostAgent 写入确认。请确认 HostAgent 菜单应用在线，重新进入会话后再试。"
+            case let .hostAgentError(reason):
+                return "HostAgent 返回错误：\(reason)"
+            case let .writeFailed(reason):
+                return "HostAgent 未能写入 Codex 会话：\(reason)"
+            }
+        }
+        if error as? RelayJSONLSessionClientManagerError == .clientUnavailable {
+            return "Relay transport 尚未配置，无法连接 Host Agent。"
+        }
         return String(describing: error)
     }
 
@@ -535,11 +674,11 @@ struct SessionDetailView: View {
     }
 
     private var transcriptBottomPadding: CGFloat {
-        isComposerCompact ? 86 : 170
+        CGFloat(SessionDetailLayoutMetrics.composerSafeAreaInset(isComposerCompact: isComposerCompact).transcriptBottomSpacer)
     }
 
     private var jumpButtonBottomPadding: CGFloat {
-        isComposerCompact ? 90 : 174
+        CGFloat(SessionDetailLayoutMetrics.composerSafeAreaInset(isComposerCompact: isComposerCompact).jumpToLatestBottomPadding)
     }
 
     private var approvalBinding: Binding<IdentifiedApprovalRequest?> {
@@ -558,6 +697,7 @@ private enum TimelineUpdateSource {
     case initialLoad
     case historyPrepend
     case liveUpdate
+    case foregroundRefresh
 }
 
 private struct TimelineViewportHeightPreferenceKey: PreferenceKey {
@@ -593,11 +733,13 @@ private struct SessionItemView: View {
                 Text(row.body)
                     .font(.body)
                     .lineSpacing(3)
+                    .textSelection(.enabled)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color.accentColor.opacity(0.14))
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
+            .copyableTranscriptRow(row)
         case .assistantText:
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
@@ -606,6 +748,7 @@ private struct SessionItemView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
+            .copyableTranscriptRow(row)
         case .toolOutput:
             VStack(alignment: .leading, spacing: 8) {
                 Button(action: onToggleTool) {
@@ -647,6 +790,7 @@ private struct SessionItemView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(.tertiarySystemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .copyableTranscriptRow(row)
         case .thinking:
             Text(row.body)
                 .font(.body)
@@ -654,7 +798,48 @@ private struct SessionItemView: View {
                 .italic()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
+                .textSelection(.enabled)
+                .copyableTranscriptRow(row)
+        case .status:
+            Text(row.body)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+                .textSelection(.enabled)
+                .copyableTranscriptRow(row)
         }
+    }
+}
+
+private extension View {
+    func copyableTranscriptRow(_ row: TranscriptRow) -> some View {
+        modifier(TranscriptCopyModifier(payload: row.copyPayload))
+    }
+}
+
+private struct TranscriptCopyModifier: ViewModifier {
+    let payload: String?
+    @State private var copied = false
+
+    func body(content: Content) -> some View {
+        guard let payload, !payload.isEmpty else {
+            return AnyView(content)
+        }
+        return AnyView(content.contextMenu {
+            Button {
+                UIPasteboard.general.string = payload
+                copied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_100_000_000)
+                    await MainActor.run {
+                        copied = false
+                    }
+                }
+            } label: {
+                Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
+            }
+        })
     }
 }
 

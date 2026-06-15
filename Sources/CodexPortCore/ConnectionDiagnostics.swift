@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public enum ConnectionFailure: Equatable, Sendable {
     case networkUnreachable
@@ -19,6 +20,11 @@ public enum DiagnosticCategory: Equatable, Sendable {
     case codexTooOld(required: String, actual: String)
     case proxyUnsupported
     case protocolHandshake
+}
+
+public enum RelayDiagnosticFailure: Error, Equatable, Sendable {
+    case relayUnavailable(String)
+    case hostAgentOffline(hostID: UUID, lastSeenAt: Date?)
 }
 
 public enum DiagnosticStatus: Equatable, Sendable {
@@ -88,6 +94,10 @@ public struct ConnectionDiagnostics: Sendable {
     public func report(for error: Error) async -> DiagnosticReport {
         if let ssh = error as? SSHConnectionError {
             switch ssh {
+            case .missingSSHCredential:
+                return DiagnosticReport(rows: [
+                    DiagnosticRow(title: "SSH 凭据", status: .failed, message: "该 Host 没有 SSH 凭据。请确认当前条目是 Direct SSH Host，而不是 HostAgent 配对 Host。")
+                ])
             case let .networkUnreachable(message):
                 return DiagnosticReport(rows: [
                     DiagnosticRow(title: "SSH 连接", status: .failed, message: "无法连接到远端 host。底层错误：\(message)")
@@ -131,6 +141,15 @@ public struct ConnectionDiagnostics: Sendable {
                 return await report(for: [.remoteCommandFailed(message)])
             }
         }
+        if let relay = error as? RelayDiagnosticFailure {
+            return await report(for: relay)
+        }
+        if let p2pRuntime = error as? RelayP2PDataChannelRuntimeError {
+            return await report(for: p2pRuntime)
+        }
+        if let pairing = error as? RelayPairingError {
+            return await report(for: pairing)
+        }
         if let codec = error as? JSONRPCCodecError {
             switch codec {
             case let .invalidMessage(message):
@@ -146,6 +165,58 @@ public struct ConnectionDiagnostics: Sendable {
         return DiagnosticReport(rows: [
             DiagnosticRow(title: "未知错误", status: .failed, message: String(describing: error))
         ])
+    }
+
+    public func report(for failure: RelayDiagnosticFailure) async -> DiagnosticReport {
+        switch failure {
+        case let .relayUnavailable(message):
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Relay 连接", status: .failed, message: "无法连接 CodexPort Relay：\(message)")
+            ])
+        case let .hostAgentOffline(_, lastSeenAt):
+            let lastSeen = lastSeenAt.map { "最后在线 \(HostProfileRowPresentation.utcTimestamp($0))。" } ?? ""
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Host Agent", status: .failed, message: "Host Agent 离线。\(lastSeen)请检查 Mac 是否开机、联网并运行 CodexPort Host Agent。")
+            ])
+        }
+    }
+
+    public func report(for error: RelayPairingError) async -> DiagnosticReport {
+        switch error {
+        case .pairingRecordNotFound:
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Pairing", status: .failed, message: "该 iPhone 的 Pairing 已失效或被撤销，请在 Mac Host Agent 上重新配对。")
+            ])
+        case let .versionMismatch(clientSupported, relaySupported):
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Relay 版本", status: .failed, message: "Relay protocol 版本不兼容。iOS 支持 \(Self.versionList(clientSupported))，Relay 支持 \(Self.versionList(relaySupported))。请升级 iOS app 或 Host Agent。")
+            ])
+        case let .tokenExpired(tokenID, _):
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Pairing", status: .failed, message: "Pairing Token 已过期：\(tokenID)。请在 Mac Host Agent 上重新生成。")
+            ])
+        case let .tokenAlreadyUsed(tokenID):
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Pairing", status: .failed, message: "Pairing Token 已使用：\(tokenID)。请在 Mac Host Agent 上重新生成。")
+            ])
+        case let .tokenNotFound(tokenID):
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Pairing", status: .failed, message: "找不到 Pairing Token：\(tokenID)。请检查输入或重新生成。")
+            ])
+        case .unknownHost:
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "Host Agent", status: .failed, message: "Pairing Token 指向的 Host Agent 未注册或已离线。")
+            ])
+        }
+    }
+
+    public func report(for error: RelayP2PDataChannelRuntimeError) async -> DiagnosticReport {
+        switch error {
+        case let .runtimeUnavailable(message):
+            return DiagnosticReport(rows: [
+                DiagnosticRow(title: "WebRTC DataChannel", status: .failed, message: "P2P DataChannel runtime unavailable: \(message)")
+            ])
+        }
     }
 
     private func row(for category: DiagnosticCategory) -> DiagnosticRow {
@@ -182,6 +253,10 @@ public struct ConnectionDiagnostics: Sendable {
             return "\(Int(seconds))"
         }
         return String(format: "%.2f", seconds)
+    }
+
+    private static func versionList(_ versions: [RelayProtocolVersion]) -> String {
+        "[\(versions.map(\.description).joined(separator: ", "))]"
     }
 }
 

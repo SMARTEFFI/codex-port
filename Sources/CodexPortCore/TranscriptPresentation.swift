@@ -5,6 +5,7 @@ public enum TranscriptRowKind: Equatable, Sendable {
     case userBubble
     case toolOutput
     case thinking
+    case status
 }
 
 public struct TranscriptRow: Equatable, Identifiable, Sendable {
@@ -17,6 +18,7 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
     public var isCollapsed: Bool
     public var blocks: [TranscriptBlock]
     public var diffLines: [TranscriptDiffLine]
+    public var copyPayload: String?
 
     public var usesBubble: Bool {
         kind == .userBubble
@@ -31,7 +33,8 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
         systemImage: String? = nil,
         isCollapsed: Bool = false,
         blocks: [TranscriptBlock] = [],
-        diffLines: [TranscriptDiffLine] = []
+        diffLines: [TranscriptDiffLine] = [],
+        copyPayload: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -42,6 +45,7 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
         self.isCollapsed = isCollapsed
         self.blocks = blocks
         self.diffLines = diffLines
+        self.copyPayload = copyPayload
     }
 }
 
@@ -54,13 +58,14 @@ public enum TranscriptPresentation {
         var rows = items.enumerated().map { index, item in
             switch item {
             case let .userMessage(text):
-                return TranscriptRow(id: "\(index)-user", kind: .userBubble, body: text)
+                return TranscriptRow(id: "\(index)-user", kind: .userBubble, body: text, copyPayload: text)
             case let .assistantMessage(text):
                 return TranscriptRow(
                     id: "\(index)-assistant",
                     kind: .assistantText,
                     body: text,
-                    blocks: MarkdownCodeBlockParser.blocks(in: text)
+                    blocks: MarkdownCodeBlockParser.blocks(in: text),
+                    copyPayload: text
                 )
             case let .commandOutput(text):
                 let id = "\(index)-command"
@@ -73,7 +78,8 @@ public enum TranscriptPresentation {
                     summary: firstNonEmptyLine(in: text) ?? "命令输出",
                     systemImage: "terminal",
                     isCollapsed: !isExpanded,
-                    blocks: isExpanded ? [.code(language: .shell, text: text)] : []
+                    blocks: isExpanded ? [.code(language: .shell, text: text)] : [],
+                    copyPayload: text
                 )
             case let .fileChange(path, diff):
                 let id = "\(index)-file"
@@ -86,15 +92,27 @@ public enum TranscriptPresentation {
                     summary: path.isEmpty ? firstNonEmptyLine(in: diff) ?? "文件变更" : path,
                     systemImage: "doc.text",
                     isCollapsed: !isExpanded,
-                    diffLines: isExpanded ? TranscriptDiffLine.classify(diff) : []
+                    diffLines: isExpanded ? TranscriptDiffLine.classify(diff) : [],
+                    copyPayload: diff
                 )
             }
         }
-        if shouldShowThinking(for: items, status: status) {
+        if let workingBody = workingBody(for: items, status: status) {
             rows.append(TranscriptRow(
                 id: "thinking",
                 kind: .thinking,
-                body: "正在思考..."
+                body: workingBody,
+                copyPayload: workingBody
+            ))
+        }
+        if case let .failed(reason) = status {
+            let message = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = message.isEmpty ? "会话失败。" : "会话失败：\(message)"
+            rows.append(TranscriptRow(
+                id: "status-failed",
+                kind: .status,
+                body: body,
+                copyPayload: body
             ))
         }
         return rows
@@ -107,15 +125,16 @@ public enum TranscriptPresentation {
             .first { !$0.isEmpty }
     }
 
-    private static func shouldShowThinking(for items: [VisibleItem], status: TurnStatus?) -> Bool {
-        guard status == .running else { return false }
-        return !items.contains { item in
-            switch item {
-            case .assistantMessage, .commandOutput, .fileChange:
-                return true
-            case .userMessage:
-                return false
-            }
+    private static func workingBody(for items: [VisibleItem], status: TurnStatus?) -> String? {
+        guard status == .running else { return nil }
+        guard let latestItem = items.last else { return nil }
+        switch latestItem {
+        case .userMessage:
+            return "正在思考..."
+        case .commandOutput, .fileChange:
+            return "正在工作..."
+        case .assistantMessage:
+            return nil
         }
     }
 }

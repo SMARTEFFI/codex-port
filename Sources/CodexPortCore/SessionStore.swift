@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public struct ThreadDetail: Equatable, Sendable {
     public var id: String
@@ -92,6 +93,10 @@ public final class SessionStore {
         visibleHistoryStartIndex > 0 || earlierTurnsCursor != nil
     }
 
+    public var earlierHistoryCursor: String? {
+        earlierTurnsCursor
+    }
+
     public var totalHistoryItemCount: Int {
         allHistoryItems.count
     }
@@ -171,6 +176,13 @@ public final class SessionStore {
         try await send(composer: composer)
     }
 
+    public func appendOptimisticUserMessage(_ text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let item = VisibleItem.userMessage(text)
+        allHistoryItems.append(item)
+        visibleItems.append(item)
+    }
+
     public func send(composer: InputComposer) async throws {
         let threadID = thread?.id ?? runningThreadID ?? ""
         if let runningTurnID {
@@ -198,8 +210,7 @@ public final class SessionStore {
         runningThreadID = threadID
         status = .running
         if !composer.text.isEmpty {
-            allHistoryItems.append(.userMessage(composer.text))
-            visibleItems.append(.userMessage(composer.text))
+            appendOptimisticUserMessage(composer.text)
         }
     }
 
@@ -241,29 +252,31 @@ public final class SessionStore {
             if newStatus != .running {
                 runningTurnID = nil
             }
-        case let .itemCompleted(_, itemID, item):
-            if let index = itemIndexByID[itemID] {
+        case let .itemCompleted(turnID, itemID, item):
+            let itemKey = self.itemKey(turnID: turnID, itemID: itemID)
+            if let index = itemIndexByID[itemKey] {
                 visibleItems[index] = item
                 updateHistoryItem(atVisibleIndex: index, with: item)
                 return
             }
             if isDuplicateOptimisticUserMessage(item) {
-                itemIndexByID[itemID] = visibleItems.count - 1
+                itemIndexByID[itemKey] = visibleItems.count - 1
                 return
             }
-            itemIndexByID[itemID] = visibleItems.count
+            itemIndexByID[itemKey] = visibleItems.count
             allHistoryItems.append(item)
             visibleItems.append(item)
-        case let .agentMessageDelta(_, itemID, delta):
-            append(delta: delta, itemID: itemID, make: VisibleItem.assistantMessage, merge: mergeAssistant)
-        case let .commandOutputDelta(_, itemID, delta):
-            append(delta: delta, itemID: itemID, make: VisibleItem.commandOutput, merge: mergeCommand)
-        case let .fileChangeDelta(_, itemID, path, diff):
-            if let index = itemIndexByID[itemID] {
+        case let .agentMessageDelta(turnID, itemID, delta):
+            append(delta: delta, turnID: turnID, itemID: itemID, make: VisibleItem.assistantMessage, merge: mergeAssistant)
+        case let .commandOutputDelta(turnID, itemID, delta):
+            append(delta: delta, turnID: turnID, itemID: itemID, make: VisibleItem.commandOutput, merge: mergeCommand)
+        case let .fileChangeDelta(turnID, itemID, path, diff):
+            let itemKey = self.itemKey(turnID: turnID, itemID: itemID)
+            if let index = itemIndexByID[itemKey] {
                 visibleItems[index] = .fileChange(path: path, diff: diff)
                 updateHistoryItem(atVisibleIndex: index, with: .fileChange(path: path, diff: diff))
             } else {
-                itemIndexByID[itemID] = visibleItems.count
+                itemIndexByID[itemKey] = visibleItems.count
                 allHistoryItems.append(.fileChange(path: path, diff: diff))
                 visibleItems.append(.fileChange(path: path, diff: diff))
             }
@@ -273,10 +286,149 @@ public final class SessionStore {
         }
     }
 
+    public func receive(relayEvent: RelayLiveSessionEvent) {
+        switch relayEvent {
+        case let .sessionStarted(_, threadID, turnID):
+            receive(.turnStarted(threadID: threadID, turnID: turnID))
+        case let .threadHistoryLoaded(threadID, items, status):
+            let historyItems = items.map(VisibleItem.init(relayHistoryItem:))
+            thread = ThreadDetail(
+                id: threadID,
+                turns: [
+                    Turn(
+                        id: "\(threadID)-history",
+                        status: TurnStatus(relayStatus: status),
+                        items: historyItems
+                    )
+                ]
+            )
+            runningThreadID = threadID
+            runningTurnID = status == .running ? "\(threadID)-history" : nil
+            self.status = TurnStatus(relayStatus: status)
+            allHistoryItems = historyItems
+            visibleHistoryStartIndex = max(0, allHistoryItems.count - initialVisibleItemLimit)
+            visibleItems = Array(allHistoryItems[visibleHistoryStartIndex...])
+            loadedTurnCount = historyItems.isEmpty ? 0 : 1
+            isTotalHistoryCountKnown = true
+            earlierTurnsCursor = nil
+            usesServerPagedHistory = false
+            itemIndexByID.removeAll()
+        case let .userMessage(turnID, itemID, text):
+            receive(.itemCompleted(turnID: turnID, itemID: itemID, item: .userMessage(text)))
+        case let .assistantTextDelta(turnID, itemID, text):
+            receive(.agentMessageDelta(turnID: turnID, itemID: itemID, delta: text))
+        case let .commandOutputDelta(turnID, itemID, text):
+            receive(.commandOutputDelta(turnID: turnID, itemID: itemID, delta: text))
+        case let .fileChange(turnID, itemID, path, diff):
+            receive(.fileChangeDelta(turnID: turnID, itemID: itemID, path: path, diff: diff))
+        case .approvalRequested:
+            break
+        case let .turnCompleted(turnID):
+            receive(.turnCompleted(turnID: turnID))
+        case let .turnFailed(turnID, reason):
+            runningTurnID = nil
+            status = .failed(reason)
+            runningThreadID = runningThreadID ?? thread?.id
+            if runningThreadID == nil {
+                runningThreadID = turnID
+            }
+        case .writeStatusChanged:
+            break
+        case let .streamClosed(_, threadID, _):
+            runningThreadID = threadID
+        }
+    }
+
+    public func receive(relayHistoryPage page: RelayThreadHistoryPage) {
+        guard page.threadID == (thread?.id ?? runningThreadID ?? page.threadID) else { return }
+        let pageItems = page.items.map(VisibleItem.init(relayHistoryItem:))
+        if page.requestID == "initial" {
+            let optimisticItems = optimisticItemsNotPresent(in: pageItems)
+            let mergedItems = pageItems + optimisticItems
+            thread = ThreadDetail(
+                id: page.threadID,
+                turns: [
+                    Turn(
+                        id: "\(page.threadID)-history",
+                        status: TurnStatus(relayStatus: page.status),
+                        items: mergedItems
+                    )
+                ]
+            )
+            runningThreadID = page.threadID
+            runningTurnID = page.status == .running ? "\(page.threadID)-history" : nil
+            status = TurnStatus(relayStatus: page.status)
+            allHistoryItems = mergedItems
+            visibleHistoryStartIndex = max(0, allHistoryItems.count - initialVisibleItemLimit)
+            visibleItems = Array(allHistoryItems[visibleHistoryStartIndex...])
+            loadedTurnCount = mergedItems.isEmpty ? 0 : 1
+            isTotalHistoryCountKnown = page.nextCursor == nil
+            earlierTurnsCursor = page.nextCursor
+            itemIndexByID.removeAll()
+            return
+        }
+        guard !pageItems.isEmpty else {
+            earlierTurnsCursor = page.nextCursor
+            if page.nextCursor == nil {
+                isTotalHistoryCountKnown = true
+            }
+            return
+        }
+        let existingItems = allHistoryItems
+        var uniquePageItems: [VisibleItem] = []
+        for item in pageItems where !existingItems.contains(item) && !uniquePageItems.contains(item) {
+            uniquePageItems.append(item)
+        }
+        guard !uniquePageItems.isEmpty else {
+            earlierTurnsCursor = page.nextCursor
+            if page.nextCursor == nil {
+                isTotalHistoryCountKnown = true
+            }
+            return
+        }
+        allHistoryItems = uniquePageItems + existingItems
+        if let thread {
+            self.thread = ThreadDetail(
+                id: thread.id,
+                turns: [
+                    Turn(
+                        id: "\(page.threadID)-history",
+                        status: TurnStatus(relayStatus: page.status),
+                        items: allHistoryItems
+                    )
+                ]
+            )
+        } else {
+            thread = ThreadDetail(
+                id: page.threadID,
+                turns: [
+                    Turn(
+                        id: "\(page.threadID)-history",
+                        status: TurnStatus(relayStatus: page.status),
+                        items: allHistoryItems
+                    )
+                ]
+            )
+        }
+        visibleHistoryStartIndex = 0
+        visibleItems = allHistoryItems
+        earlierTurnsCursor = page.nextCursor
+        isTotalHistoryCountKnown = page.nextCursor == nil
+        loadedTurnCount += pageItems.isEmpty ? 0 : 1
+        itemIndexByID = itemIndexByID.mapValues { $0 + uniquePageItems.count }
+    }
+
     private func isDuplicateOptimisticUserMessage(_ item: VisibleItem) -> Bool {
         guard case let .userMessage(text) = item else { return false }
         guard case let .userMessage(lastText) = visibleItems.last else { return false }
         return lastText == text
+    }
+
+    private func optimisticItemsNotPresent(in historyItems: [VisibleItem]) -> [VisibleItem] {
+        visibleItems.filter { item in
+            guard case .userMessage = item else { return false }
+            return !historyItems.contains(item)
+        }
     }
 
     private func restoreRunningState(threadID fallbackThreadID: String) {
@@ -370,16 +522,21 @@ public final class SessionStore {
         }
     }
 
-    private func append(delta: String, itemID: String, make: (String) -> VisibleItem, merge: (VisibleItem, String) -> VisibleItem) {
-        if let index = itemIndexByID[itemID] {
+    private func append(delta: String, turnID: String, itemID: String, make: (String) -> VisibleItem, merge: (VisibleItem, String) -> VisibleItem) {
+        let itemKey = self.itemKey(turnID: turnID, itemID: itemID)
+        if let index = itemIndexByID[itemKey] {
             visibleItems[index] = merge(visibleItems[index], delta)
             updateHistoryItem(atVisibleIndex: index, with: visibleItems[index])
         } else {
             let item = make(delta)
-            itemIndexByID[itemID] = visibleItems.count
+            itemIndexByID[itemKey] = visibleItems.count
             allHistoryItems.append(item)
             visibleItems.append(item)
         }
+    }
+
+    private func itemKey(turnID: String, itemID: String) -> String {
+        "\(turnID):\(itemID)"
     }
 
     private func updateHistoryItem(atVisibleIndex visibleIndex: Int, with item: VisibleItem) {
@@ -439,9 +596,35 @@ extension TurnStatus {
             self = .completed
         }
     }
+
+    init(relayStatus: RelayThreadRunStatus) {
+        switch relayStatus {
+        case .running:
+            self = .running
+        case .interrupting:
+            self = .interrupting
+        case .completed:
+            self = .completed
+        case .failed:
+            self = .failed("")
+        }
+    }
 }
 
 extension VisibleItem {
+    init(relayHistoryItem item: RelayThreadHistoryItem) {
+        switch item {
+        case let .userMessage(text):
+            self = .userMessage(text)
+        case let .assistantMessage(text):
+            self = .assistantMessage(text)
+        case let .commandOutput(text):
+            self = .commandOutput(text)
+        case let .fileChange(path, diff):
+            self = .fileChange(path: path, diff: diff)
+        }
+    }
+
     init?(json: JSONValue) {
         guard let object = json.object else { return nil }
         let type = object["type"]?.string ?? object["kind"]?.string

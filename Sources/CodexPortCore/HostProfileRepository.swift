@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public protocol HostProfileRepository {
     func load() throws -> [HostProfile]
@@ -51,6 +52,19 @@ public final class PersistentHostProfileStore {
         return profile
     }
 
+    @discardableResult
+    public func seedRelayHostIfNeeded(_ seed: RelayHostLaunchSeed) throws -> HostProfile? {
+        if profiles.contains(where: { profile in
+            guard let relayHost = profile.connectionMethod.relayHost else { return false }
+            return relayHost.hostAgentID == seed.hostAgentID
+                && relayHost.deviceID == seed.deviceID
+                && relayHost.pairingRecordID == seed.pairingRecordID
+        }) {
+            return nil
+        }
+        return try create(seed.hostProfileDraft())
+    }
+
     public func update(_ id: UUID, with draft: HostProfileDraft) throws -> HostProfile {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else {
             throw HostProfileStoreError.notFound
@@ -87,6 +101,8 @@ public final class PersistentHostProfileStore {
     private func makeProfile(id: UUID, draft: HostProfileDraft, knownHostFingerprint: String?) throws -> HostProfile {
         let auth: HostProfileAuth
         switch draft.auth {
+        case .none:
+            auth = .none
         case let .password(secret, protection):
             auth = .password(credentialID: try credentialVault.saveSecret(secret, protection: protection))
         case let .key(label, privateKey, protection):
@@ -98,13 +114,14 @@ public final class PersistentHostProfileStore {
         }
         return HostProfile(
             id: id,
+            connectionMethod: HostConnectionMethod(draft.connectionMethod),
             name: draft.name,
             host: draft.host,
             port: draft.port,
             username: draft.username,
             auth: auth,
             codexPath: draft.codexPath,
-            startupCommand: AppServerStartupCommand(codexPath: draft.codexPath).shellCommand,
+            startupCommand: draft.normalizedStartupCommand,
             defaultDirectory: draft.defaultDirectory,
             knownHostFingerprint: knownHostFingerprint
         )
@@ -168,6 +185,7 @@ public final class PersistentKnownHostVerifier: KnownHostVerifying {
 
 private struct StoredHostProfile: Codable {
     var id: UUID
+    var connectionMethod: StoredHostConnectionMethod?
     var name: String
     var host: String
     var port: Int
@@ -180,6 +198,7 @@ private struct StoredHostProfile: Codable {
 
     init(hostProfile: HostProfile) {
         id = hostProfile.id
+        connectionMethod = StoredHostConnectionMethod(hostProfile.connectionMethod)
         name = hostProfile.name
         host = hostProfile.host
         port = hostProfile.port
@@ -194,6 +213,7 @@ private struct StoredHostProfile: Codable {
     var hostProfile: HostProfile {
         HostProfile(
             id: id,
+            connectionMethod: connectionMethod?.hostConnectionMethod ?? .directSSH,
             name: name,
             host: host,
             port: port,
@@ -208,11 +228,14 @@ private struct StoredHostProfile: Codable {
 }
 
 private enum StoredHostProfileAuth: Codable {
+    case none
     case password(credentialID: String)
     case key(label: String, credentialID: String)
 
     init(_ auth: HostProfileAuth) {
         switch auth {
+        case .none:
+            self = .none
         case let .password(credentialID):
             self = .password(credentialID: credentialID)
         case let .key(label, credentialID):
@@ -222,10 +245,93 @@ private enum StoredHostProfileAuth: Codable {
 
     var hostProfileAuth: HostProfileAuth {
         switch self {
+        case .none:
+            return .none
         case let .password(credentialID):
             return .password(credentialID: credentialID)
         case let .key(label, credentialID):
             return .key(label: label, credentialID: credentialID)
+        }
+    }
+}
+
+private enum StoredHostConnectionMethod: Codable {
+    case directSSH
+    case relay(StoredRelayHost)
+
+    init(_ method: HostConnectionMethod) {
+        switch method {
+        case .directSSH:
+            self = .directSSH
+        case let .relay(host):
+            self = .relay(StoredRelayHost(host))
+        }
+    }
+
+    var hostConnectionMethod: HostConnectionMethod {
+        switch self {
+        case .directSSH:
+            return .directSSH
+        case let .relay(host):
+            return .relay(host.relayHost)
+        }
+    }
+}
+
+private struct StoredRelayHost: Codable {
+    var hostAgentID: UUID
+    var displayName: String
+    var userName: String
+    var pairingRecordID: String
+    var deviceID: UUID?
+    var relayEndpointURL: URL?
+    var presence: StoredRelayHostPresence
+    var diagnosticsSummary: String
+
+    init(_ host: RelayHost) {
+        hostAgentID = host.hostAgentID
+        displayName = host.displayName
+        userName = host.userName
+        pairingRecordID = host.pairingRecordID
+        deviceID = host.deviceID
+        relayEndpointURL = host.relayEndpointURL
+        presence = StoredRelayHostPresence(host.presence)
+        diagnosticsSummary = host.diagnosticsSummary
+    }
+
+    var relayHost: RelayHost {
+        RelayHost(
+            hostAgentID: hostAgentID,
+            displayName: displayName,
+            userName: userName,
+            pairingRecordID: pairingRecordID,
+            deviceID: deviceID,
+            relayEndpointURL: relayEndpointURL,
+            presence: presence.relayHostPresence,
+            diagnosticsSummary: diagnosticsSummary
+        )
+    }
+}
+
+private enum StoredRelayHostPresence: Codable {
+    case offline(lastSeenAt: Date?)
+    case online(activeConnectionCount: Int)
+
+    init(_ presence: RelayHostPresence) {
+        switch presence {
+        case let .offline(lastSeenAt):
+            self = .offline(lastSeenAt: lastSeenAt)
+        case let .online(activeConnectionCount):
+            self = .online(activeConnectionCount: activeConnectionCount)
+        }
+    }
+
+    var relayHostPresence: RelayHostPresence {
+        switch self {
+        case let .offline(lastSeenAt):
+            return .offline(lastSeenAt: lastSeenAt)
+        case let .online(activeConnectionCount):
+            return .online(activeConnectionCount: activeConnectionCount)
         }
     }
 }

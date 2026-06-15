@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import CodexPortCore
+@testable import CodexPortShared
 
 @Test func connectionDiagnosticsClassifiesFailuresAcrossSshAndCodexStartup() async {
     let diagnostics = ConnectionDiagnostics()
@@ -43,6 +44,229 @@ import Testing
     #expect(report.rows == [
         DiagnosticRow(title: "Host Key", status: .failed, message: "远端 host key 与已信任记录不一致。确认安全后再重新信任。")
     ])
+}
+
+@Test func relayDiagnosticsDistinguishesUnavailableOfflineRevokedAndVersionMismatch() async {
+    let diagnostics = ConnectionDiagnostics()
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+
+    #expect(await diagnostics.report(for: RelayDiagnosticFailure.relayUnavailable("network down")).rows == [
+        DiagnosticRow(title: "Relay 连接", status: .failed, message: "无法连接 CodexPort Relay：network down")
+    ])
+    #expect(await diagnostics.report(for: RelayDiagnosticFailure.hostAgentOffline(hostID: hostID, lastSeenAt: Date(timeIntervalSince1970: 100))).rows == [
+        DiagnosticRow(title: "Host Agent", status: .failed, message: "Host Agent 离线。最后在线 1970-01-01 00:01:40Z。请检查 Mac 是否开机、联网并运行 CodexPort Host Agent。")
+    ])
+    #expect(await diagnostics.report(for: RelayPairingError.pairingRecordNotFound(hostID: hostID, deviceID: deviceID)).rows == [
+        DiagnosticRow(title: "Pairing", status: .failed, message: "该 iPhone 的 Pairing 已失效或被撤销，请在 Mac Host Agent 上重新配对。")
+    ])
+    #expect(await diagnostics.report(for: RelayPairingError.versionMismatch(clientSupported: [RelayProtocolVersion(major: 1, minor: 0, patch: 0)], relaySupported: [.v0_2_0])).rows == [
+        DiagnosticRow(title: "Relay 版本", status: .failed, message: "Relay protocol 版本不兼容。iOS 支持 [1.0.0]，Relay 支持 [0.2.0]。请升级 iOS app 或 Host Agent。")
+    ])
+}
+
+@Test func remoteConnectionPathStateMapsToIOSHostAgentMenuAndSupportProbeRows() {
+    let state = RemoteConnectionPathState(
+        signaling: .reachable,
+        ice: .gathering,
+        dataPath: .directConnected,
+        dataChannel: .open,
+        hostProtocol: .failed(reason: "Host protocol handshake timed out."),
+        codexLiveSource: .notReady(reason: "Codex Desktop event source disconnected.")
+    )
+
+    #expect(state.iosConnectionLogLines == [
+        "Signaling: reachable",
+        "ICE: gathering",
+        "Path: direct connected",
+        "DataChannel: open",
+        "Host protocol: failed - Host protocol handshake timed out.",
+        "Codex live source: not ready - Codex Desktop event source disconnected.",
+    ])
+    #expect(state.hostAgentMenuItems == [
+        "Signaling reachable",
+        "DataChannel direct connected",
+        "Host protocol failed",
+        "Codex live source not ready",
+    ])
+    #expect(state.supportProbeReport.rows == [
+        DiagnosticRow(title: "Signaling", status: .passed, message: "reachable"),
+        DiagnosticRow(title: "ICE", status: .notRun, message: "gathering"),
+        DiagnosticRow(title: "Connection Path", status: .passed, message: "direct connected"),
+        DiagnosticRow(title: "DataChannel", status: .passed, message: "open"),
+        DiagnosticRow(title: "Host Protocol", status: .failed, message: "Host protocol handshake timed out."),
+        DiagnosticRow(title: "Codex Live Source", status: .failed, message: "Codex Desktop event source disconnected."),
+    ])
+}
+
+@Test func remoteConnectionPresenceDoesNotImplyHostProtocolReady() {
+    let state = RemoteConnectionPathState.fromPresence(
+        .online(activeConnectionCount: 0),
+        authorization: .authorizedToSignal(pairingRecordID: "pairing-1")
+    )
+
+    #expect(state.iosConnectionLogLines == [
+        "Signaling: authorized to signal",
+        "ICE: not started",
+        "Path: not connected",
+        "DataChannel: closed",
+        "Host protocol: not ready",
+        "Codex live source: not ready",
+    ])
+    #expect(state.supportProbeReport.rows.contains(DiagnosticRow(
+        title: "Host Protocol",
+        status: .notRun,
+        message: "not ready"
+    )))
+}
+
+@Test func remoteConnectionPathStateAppliesWebRTCDataChannelStateUpdates() {
+    var state = RemoteConnectionPathState.fromPresence(
+        .online(activeConnectionCount: 1),
+        authorization: .authorizedToSignal(pairingRecordID: "pairing-1")
+    )
+
+    state.apply(.iceGathering)
+    state.apply(.directConnected)
+    state.apply(.dataChannelOpen)
+    state.markHostProtocolReady()
+    state.markCodexLiveSourceReady()
+
+    #expect(state.iosConnectionLogLines == [
+        "Signaling: authorized to signal",
+        "ICE: gathering",
+        "Path: direct connected",
+        "DataChannel: open",
+        "Host protocol: ready",
+        "Codex live source: ready",
+    ])
+
+    state.apply(.dataChannelClosed)
+    #expect(state.supportProbeReport.rows.contains(DiagnosticRow(
+        title: "DataChannel",
+        status: .notRun,
+        message: "closed"
+    )))
+}
+
+@Test func remoteConnectionPathStateDistinguishesTurnFallbackSuccessAndFailure() {
+    var turnState = RemoteConnectionPathState.fromPresence(
+        .online(activeConnectionCount: 1),
+        authorization: .authorizedToSignal(pairingRecordID: "pairing-1")
+    )
+    turnState.apply(.iceGathering)
+    turnState.apply(.directFailed(reason: "peer reflexive candidate timed out"))
+    turnState.apply(.turnRelayedConnected)
+    turnState.apply(.dataChannelOpen)
+
+    #expect(turnState.iosConnectionLogLines.contains("Path: TURN relayed connected"))
+    #expect(turnState.hostAgentMenuItems.contains("DataChannel TURN relayed connected"))
+    #expect(turnState.supportProbeReport.rows.contains(DiagnosticRow(
+        title: "Connection Path",
+        status: .passed,
+        message: "TURN relayed connected"
+    )))
+
+    var failedState = RemoteConnectionPathState.fromPresence(
+        .online(activeConnectionCount: 1),
+        authorization: .authorizedToSignal(pairingRecordID: "pairing-1")
+    )
+    failedState.apply(.iceGathering)
+    failedState.apply(.directFailed(reason: "symmetric NAT blocked direct candidates"))
+    failedState.apply(.turnFailed(reason: "TURN credentials rejected"))
+
+    #expect(failedState.supportProbeReport.rows.contains(DiagnosticRow(
+        title: "Connection Path",
+        status: .failed,
+        message: "TURN failed - TURN credentials rejected"
+    )))
+    #expect(failedState.iosConnectionLogLines.contains("Path: failed - TURN failed - TURN credentials rejected"))
+}
+
+@Test func p2pConnectionRecoveryReplacesStaleDataChannelWithoutClearingLoadedHistory() {
+    var recovery = P2PConnectionRecoveryState(
+        pathState: RemoteConnectionPathState(
+            signaling: .authorizedToSignal,
+            ice: .gathering,
+            dataPath: .directConnected,
+            dataChannel: .open,
+            hostProtocol: .ready,
+            codexLiveSource: .ready
+        ),
+        loadedHistoryItems: [
+            .userMessage("older question"),
+            .assistantMessage("older answer"),
+        ]
+    )
+
+    recovery.apply(.foregrounded)
+    recovery.apply(.staleDataChannelClosed(reason: "app returned from background"))
+    recovery.apply(.replacementStarted)
+    recovery.apply(.webRTC(.iceGathering))
+    recovery.apply(.webRTC(.turnRelayedConnected))
+    recovery.apply(.webRTC(.dataChannelOpen))
+    recovery.apply(.hostProtocolReady)
+    recovery.apply(.codexLiveSourceReady)
+
+    #expect(recovery.status == .completed)
+    #expect(recovery.pathState.iosConnectionLogLines.contains("Path: TURN relayed connected"))
+    #expect(recovery.loadedHistoryItems == [
+        .userMessage("older question"),
+        .assistantMessage("older answer"),
+    ])
+}
+
+@Test func p2pConnectionRecoveryReportsFailedReplacementWithoutMarkingHostProtocolReady() {
+    var recovery = P2PConnectionRecoveryState(
+        pathState: RemoteConnectionPathState.fromPresence(
+            .online(activeConnectionCount: 1),
+            authorization: .authorizedToSignal(pairingRecordID: "pairing-1")
+        ),
+        loadedHistoryItems: [.assistantMessage("cached answer")]
+    )
+
+    recovery.apply(.networkChanged)
+    recovery.apply(.replacementStarted)
+    recovery.apply(.webRTC(.iceGathering))
+    recovery.apply(.webRTC(.turnFailed(reason: "TURN allocation timed out")))
+
+    #expect(recovery.status == .failed("TURN allocation timed out"))
+    #expect(recovery.pathState.supportProbeReport.rows.contains(DiagnosticRow(
+        title: "Host Protocol",
+        status: .notRun,
+        message: "not ready"
+    )))
+    #expect(recovery.loadedHistoryItems == [.assistantMessage("cached answer")])
+}
+
+@Test func p2pConnectionRecoveryHostAgentWakeRefreshesPresenceAndRequiresReplacement() {
+    var recovery = P2PConnectionRecoveryState(
+        pathState: RemoteConnectionPathState(
+            signaling: .authorizedToSignal,
+            ice: .gathering,
+            dataPath: .directConnected,
+            dataChannel: .open,
+            hostProtocol: .ready,
+            codexLiveSource: .ready
+        ),
+        loadedHistoryItems: [.assistantMessage("cached answer")]
+    )
+
+    recovery.apply(.hostAgentWoke(
+        presence: .online(activeConnectionCount: 0),
+        authorization: .authorizedToSignal(pairingRecordID: "pairing-1")
+    ))
+
+    #expect(recovery.status == .replacingStaleConnection)
+    #expect(recovery.pathState.iosConnectionLogLines == [
+        "Signaling: authorized to signal",
+        "ICE: not started",
+        "Path: not connected",
+        "DataChannel: closed",
+        "Host protocol: not ready",
+        "Codex live source: not ready",
+    ])
+    #expect(recovery.loadedHistoryItems == [.assistantMessage("cached answer")])
 }
 
 @MainActor

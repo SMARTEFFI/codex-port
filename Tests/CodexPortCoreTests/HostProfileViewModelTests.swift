@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import CodexPortCore
+@testable import CodexPortShared
 
 @Test func hostProfileFormBuildsPasswordDraftWithAppServerStdioCommand() throws {
     var form = HostProfileFormModel()
@@ -84,4 +85,70 @@ import Testing
     let keyDraft = try keyForm.makeDraft()
 
     #expect(keyDraft.auth == HostProfileDraftAuth.existingKey(label: "work-key", credentialID: "credential-key"))
+}
+
+@Test func hostProfileFormRoundTripsRelayHostWithoutSSHCredential() throws {
+    let hostAgentID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let relayEndpointURL = try #require(URL(string: "ws://127.0.0.1:7788/v0/streams"))
+    let profile = HostProfile(
+        id: UUID(),
+        connectionMethod: .relay(
+            RelayHost(
+                hostAgentID: hostAgentID,
+                displayName: "Mac Studio Agent",
+                userName: "chenm",
+                pairingRecordID: "pairing-record",
+                deviceID: deviceID,
+                relayEndpointURL: relayEndpointURL,
+                presence: .offline(),
+                diagnosticsSummary: "Not connected"
+            )
+        ),
+        name: "Mac Studio Relay",
+        host: "mac-studio.local",
+        port: 22,
+        username: "chenm",
+        auth: .none,
+        codexPath: "codex",
+        startupCommand: "",
+        defaultDirectory: "~/Projects",
+        knownHostFingerprint: nil
+    )
+
+    let form = HostProfileFormModel(profile: profile)
+    let draft = try form.makeDraft()
+
+    #expect(draft.connectionMethod == .relay(
+        RelayHostDraft(
+            hostAgentID: hostAgentID,
+            displayName: "Mac Studio Agent",
+            userName: "chenm",
+            pairingRecordID: "pairing-record",
+            deviceID: deviceID,
+            relayEndpointURL: relayEndpointURL,
+            presence: .offline(),
+            diagnosticsSummary: "Not connected"
+        )
+    ))
+    #expect(draft.auth == .none)
+}
+
+@Test func hostProfileFormBuildsRelayPairingInputWithoutDirectSSHFields() throws {
+    var form = HostProfileFormModel()
+    form.selectRelayConnection()
+    form.name = "CodexPort Dev Mac"
+    form.host = ""
+    form.port = ""
+    form.username = ""
+    form.pairingMaterial = "codexport://pair?token=pairing-token-ios"
+    form.deviceDisplayName = "iPhone 17 Pro"
+
+    let input = try form.makeRelayPairingInput(defaultDeviceDisplayName: "Fallback iPhone")
+
+    #expect(form.relayServerEndpoint.isEmpty)
+    #expect(input.relayBaseURL == URL(string: "https://codexport.smarteffi.net")!)
+    #expect(input.pairingTokenID == "pairing-token-ios")
+    #expect(input.deviceDisplayName == "iPhone 17 Pro")
+    #expect(input.streamEndpointURL == URL(string: "wss://codexport.smarteffi.net/v0/streams")!)
 }

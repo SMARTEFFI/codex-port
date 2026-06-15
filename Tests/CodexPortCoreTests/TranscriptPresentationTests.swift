@@ -104,6 +104,29 @@ import Testing
     #expect(rows.last?.usesBubble == false)
 }
 
+@Test func transcriptPresentationShowsThinkingForLatestRunningUserMessageAfterPriorCompletedOutput() {
+    let rows = TranscriptPresentation.rows(
+        for: [
+            .userMessage("Hi7"),
+            .assistantMessage("Hi7 收到。"),
+            .userMessage("Hi8"),
+        ],
+        status: .running
+    )
+
+    #expect(rows.map(\.kind) == [.userBubble, .assistantText, .userBubble, .thinking])
+    #expect(rows.last?.body == "正在思考...")
+}
+
+@Test func transcriptPresentationKeepsEmptyRunningRelayAttachUnrendered() {
+    let rows = TranscriptPresentation.rows(
+        for: [],
+        status: .running
+    )
+
+    #expect(rows.isEmpty)
+}
+
 @Test func transcriptPresentationHidesThinkingAfterFirstAssistantOrToolOutput() {
     let assistantRows = TranscriptPresentation.rows(
         for: [.userMessage("继续"), .assistantMessage("开始处理")],
@@ -116,4 +139,56 @@ import Testing
 
     #expect(assistantRows.map(\.kind) == [.userBubble, .assistantText])
     #expect(completedRows.map(\.kind) == [.userBubble])
+}
+
+@Test func transcriptPresentationKeepsWorkingRowAfterLatestToolOutputWhileRunning() {
+    let commandRows = TranscriptPresentation.rows(
+        for: [
+            .userMessage("跑测试"),
+            .commandOutput("swift test\nBuild complete\n"),
+        ],
+        status: .running
+    )
+    let fileRows = TranscriptPresentation.rows(
+        for: [
+            .userMessage("改文件"),
+            .fileChange(path: "README.md", diff: "+done\n"),
+        ],
+        status: .running
+    )
+
+    #expect(commandRows.map(\.kind) == [.userBubble, .toolOutput, .thinking])
+    #expect(commandRows.last?.body == "正在工作...")
+    #expect(fileRows.map(\.kind) == [.userBubble, .toolOutput, .thinking])
+    #expect(fileRows.last?.body == "正在工作...")
+}
+
+@Test func transcriptPresentationShowsFailedTurnReason() {
+    let rows = TranscriptPresentation.rows(
+        for: [.userMessage("继续")],
+        status: .failed("Codex CLI exec timed out.")
+    )
+
+    #expect(rows.map(\.kind) == [.userBubble, .status])
+    #expect(rows.last?.body == "会话失败：Codex CLI exec timed out.")
+    #expect(rows.last?.usesBubble == false)
+}
+
+@Test func transcriptPresentationExposesCopyPayloadForVisibleTranscriptRows() {
+    let rows = TranscriptPresentation.rows(
+        for: [
+            .userMessage("用户问题"),
+            .assistantMessage("助手回复"),
+            .commandOutput("swift test\npassed\n"),
+            .fileChange(path: "README.md", diff: "+added\n-removed\n")
+        ],
+        expandedToolRowIDs: ["2-command", "3-file"]
+    )
+
+    #expect(rows.map(\.copyPayload) == [
+        "用户问题",
+        "助手回复",
+        "swift test\npassed\n",
+        "+added\n-removed\n"
+    ])
 }

@@ -7,6 +7,8 @@ struct WorkspaceListView: View {
     let projectThreadGroups: [WorkspaceProjectThreadGroup]
     let dayThreadGroups: [WorkspaceDayThreadGroup]
     let recentThreads: [ThreadSummary]
+    let emptyState: WorkspaceListEmptyState
+    let isLoadingWorkspaces: Bool
     let startingThreadCWDs: Set<String>
     let onOpenSession: (ThreadSummary) -> Void
     let onStartProjectSession: (WorkspaceProject) -> Void
@@ -27,6 +29,8 @@ struct WorkspaceListView: View {
         projectThreadGroups: [WorkspaceProjectThreadGroup] = [],
         dayThreadGroups: [WorkspaceDayThreadGroup] = [],
         recentThreads: [ThreadSummary],
+        emptyState: WorkspaceListEmptyState = .directSSH,
+        isLoadingWorkspaces: Bool = false,
         startingThreadCWDs: Set<String> = [],
         onOpenSession: @escaping (ThreadSummary) -> Void,
         onStartProjectSession: @escaping (WorkspaceProject) -> Void,
@@ -37,6 +41,8 @@ struct WorkspaceListView: View {
         self.projectThreadGroups = projectThreadGroups
         self.dayThreadGroups = dayThreadGroups
         self.recentThreads = recentThreads
+        self.emptyState = emptyState
+        self.isLoadingWorkspaces = isLoadingWorkspaces
         self.startingThreadCWDs = startingThreadCWDs
         self.onOpenSession = onOpenSession
         self.onStartProjectSession = onStartProjectSession
@@ -135,7 +141,7 @@ struct WorkspaceListView: View {
                             WorkspaceGroupHeader(
                                 iconName: "calendar",
                                 title: group.title,
-                                metadata: ["\(group.threads.count) 个会话"],
+                                metadata: ["\(group.allThreads.count) 个会话"],
                                 activityIndicator: dayActivityIndicator(for: group),
                                 isCollapsed: isCollapsed(group),
                                 accessibilityName: "\(group.title) 分组",
@@ -207,8 +213,15 @@ struct WorkspaceListView: View {
         if !dayThreadGroups.isEmpty {
             return dayThreadGroups
         }
+        let visibleThreads = Array(recentThreads.prefix(5))
         return [
-            WorkspaceDayThreadGroup(id: "recent", title: "最近会话", threads: recentThreads)
+            WorkspaceDayThreadGroup(
+                id: "recent",
+                title: "最近会话",
+                threads: visibleThreads,
+                hiddenThreadCount: max(recentThreads.count - visibleThreads.count, 0),
+                allThreads: recentThreads
+            )
         ]
     }
 
@@ -252,16 +265,16 @@ struct WorkspaceListView: View {
 
     private func threads(for group: WorkspaceDayThreadGroup) -> [ThreadSummary] {
         if expandedDayGroupIDs.contains(group.id) {
-            return group.threads
+            return group.allThreads
         }
-        return Array(group.threads.prefix(5))
+        return group.threads
     }
 
     private func hiddenCount(for group: WorkspaceDayThreadGroup) -> Int {
         if expandedDayGroupIDs.contains(group.id) {
             return 0
         }
-        return max(group.threads.count - 5, 0)
+        return group.hiddenThreadCount
     }
 
     private func isCollapsed(_ group: WorkspaceProjectThreadGroup) -> Bool {
@@ -293,7 +306,7 @@ struct WorkspaceListView: View {
     }
 
     private func dayActivityIndicator(for group: WorkspaceDayThreadGroup) -> WorkspaceActivityIndicator {
-        let indicators = group.threads.map(\.activityIndicator)
+        let indicators = group.allThreads.map(\.activityIndicator)
         if indicators.contains(.running) {
             return .running
         }
@@ -322,14 +335,107 @@ struct WorkspaceListView: View {
 
     private var emptyWorkspaceSection: some View {
         Section {
-            ContentUnavailableView(
-                "暂无 Codex 会话",
-                systemImage: "folder.badge.plus",
-                description: Text("选择远端目录来创建新的工作区。")
-            )
-            Button(action: onBrowseWorkspace) {
-                Label("浏览工作区", systemImage: "folder")
+            if isLoadingWorkspaces {
+                ContentUnavailableView {
+                    WorkspaceLoadingUnavailableLabel(
+                        title: emptyState.loadingTitle,
+                        systemImage: emptyState.systemImage
+                    )
+                } description: {
+                    Text(emptyState.loadingDescription)
+                }
+            } else {
+                ContentUnavailableView(
+                    emptyState.title,
+                    systemImage: emptyState.systemImage,
+                    description: Text(emptyState.description)
+                )
             }
+            if emptyState.canBrowseWorkspace {
+                Button(action: onBrowseWorkspace) {
+                    Label("浏览工作区", systemImage: "folder")
+                }
+            }
+        }
+    }
+}
+
+struct WorkspaceLoadingUnavailableLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 52, weight: .regular))
+                .foregroundStyle(.secondary)
+
+            HStack(alignment: .center, spacing: 8) {
+                Text(title)
+                ProgressView()
+                    .controlSize(.small)
+            }
+            .font(.title3.bold())
+        }
+        .multilineTextAlignment(.center)
+    }
+}
+
+enum WorkspaceListEmptyState: Equatable, Sendable {
+    case directSSH
+    case relayThreadListUnavailable
+
+    var title: String {
+        switch self {
+        case .directSSH:
+            "暂无 Codex 会话"
+        case .relayThreadListUnavailable:
+            "会话列表尚未加载"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .directSSH:
+            "folder.badge.plus"
+        case .relayThreadListUnavailable:
+            "link.badge.plus"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .directSSH:
+            "选择远端目录来创建新的工作区。"
+        case .relayThreadListUnavailable:
+            "当前未收到 HostAgent 返回的真实 Codex 会话。请确认 Mac 上 HostAgent 在线后重试。"
+        }
+    }
+
+    var loadingTitle: String {
+        switch self {
+        case .directSSH:
+            "正在加载会话"
+        case .relayThreadListUnavailable:
+            "正在加载会话"
+        }
+    }
+
+    var loadingDescription: String {
+        switch self {
+        case .directSSH:
+            "正在读取 Codex 工作区列表。"
+        case .relayThreadListUnavailable:
+            "正在等待 HostAgent 返回真实 Codex 会话。"
+        }
+    }
+
+    var canBrowseWorkspace: Bool {
+        switch self {
+        case .directSSH:
+            true
+        case .relayThreadListUnavailable:
+            false
         }
     }
 }

@@ -158,6 +158,32 @@ import Testing
     #expect(group.hiddenThreadCount == 2)
 }
 
+@Test func workspaceListStoreLimitsDayGroupsToFiveRecentThreads() async throws {
+    let transport = RecordingCodexTransport()
+    transport.stubbedResponses["thread/list"] = .object([
+        "threads": .array((0..<7).map { index in
+            .object([
+                "id": .string("thread-\(index)"),
+                "cwd": .string("/repo/app"),
+                "updatedAt": .number(Double(1_800_000_000 - index)),
+                "preview": .string("Message \(index)")
+            ])
+        })
+    ])
+    let store = WorkspaceListStore(
+        protocolClient: CodexProtocolFacade(transport: transport),
+        now: { Date(timeIntervalSince1970: 1_800_000_100) },
+        calendar: Calendar(identifier: .gregorian)
+    )
+
+    try await store.reload(limit: 50)
+
+    let group = try #require(store.dayThreadGroups.first)
+    #expect(group.threads.map(\.id) == ["thread-0", "thread-1", "thread-2", "thread-3", "thread-4"])
+    #expect(group.hiddenThreadCount == 2)
+    #expect(group.allThreads.map(\.id) == ["thread-0", "thread-1", "thread-2", "thread-3", "thread-4", "thread-5", "thread-6"])
+}
+
 @Test func workspaceListStoreCanOptimisticallyPublishNewLocalThreadBeforeRemoteListCatchesUp() async throws {
     let transport = RecordingCodexTransport()
     transport.stubbedResponses["thread/list"] = .object([

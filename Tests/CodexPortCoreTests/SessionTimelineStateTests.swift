@@ -77,3 +77,42 @@ import Testing
     #expect(timeline.userReturnedToBottom() == true)
     #expect(timeline.setPinnedToBottom(true) == false)
 }
+
+@Test func sessionTimelineKeepsLastKnownItemsWhenForegroundRefreshIsTransientlyEmpty() {
+    var timeline = SessionTimelineState(items: [
+        .userMessage("继续"),
+        .assistantMessage("已有历史")
+    ])
+
+    let anchor = timeline.applyForegroundRefreshItems([])
+
+    #expect(anchor == .preserve)
+    #expect(timeline.items == [
+        .userMessage("继续"),
+        .assistantMessage("已有历史")
+    ])
+
+    let refreshedAnchor = timeline.applyForegroundRefreshItems([
+        .userMessage("继续"),
+        .assistantMessage("已有历史"),
+        .assistantMessage("刷新后的新内容")
+    ])
+
+    #expect(refreshedAnchor == .bottom)
+    #expect(timeline.items == [
+        .userMessage("继续"),
+        .assistantMessage("已有历史"),
+        .assistantMessage("刷新后的新内容")
+    ])
+}
+
+@Test func sessionTimelineStillAllowsExplicitInitialEmptyState() {
+    var timeline = SessionTimelineState(items: [
+        .assistantMessage("旧历史")
+    ])
+
+    let anchor = timeline.replaceLoadedItems([])
+
+    #expect(anchor == .bottom)
+    #expect(timeline.items.isEmpty)
+}

@@ -11,7 +11,6 @@
 		100000000000000000000002 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000012 /* RootView.swift */; };
 		100000000000000000000003 /* HostProfilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* HostProfilesView.swift */; };
 		100000000000000000000004 /* AddHostProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000014 /* AddHostProfileView.swift */; };
-		100000000000000000000005 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* DiagnosticsView.swift */; };
 		100000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000016 /* Assets.xcassets */; };
 		100000000000000000000007 /* CodexPortCore in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000021 /* CodexPortCore */; };
 		100000000000000000000009 /* WorkspaceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000001A /* WorkspaceListView.swift */; };
@@ -31,7 +30,6 @@
 		100000000000000000000012 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		100000000000000000000013 /* HostProfilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProfilesView.swift; sourceTree = "<group>"; };
 		100000000000000000000014 /* AddHostProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddHostProfileView.swift; sourceTree = "<group>"; };
-		100000000000000000000015 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		100000000000000000000016 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		100000000000000000000017 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		100000000000000000000018 /* CodexPort.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexPort.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -74,7 +72,6 @@
 				100000000000000000000012 /* RootView.swift */,
 				100000000000000000000013 /* HostProfilesView.swift */,
 				100000000000000000000014 /* AddHostProfileView.swift */,
-				100000000000000000000015 /* DiagnosticsView.swift */,
 				10000000000000000000001A /* WorkspaceListView.swift */,
 				10000000000000000000001B /* RemoteFileBrowserView.swift */,
 				10000000000000000000001C /* CodexInputBarView.swift */,
@@ -186,7 +183,6 @@
 				100000000000000000000002 /* RootView.swift in Sources */,
 				100000000000000000000003 /* HostProfilesView.swift in Sources */,
 				100000000000000000000004 /* AddHostProfileView.swift in Sources */,
-				100000000000000000000005 /* DiagnosticsView.swift in Sources */,
 				100000000000000000000009 /* WorkspaceListView.swift in Sources */,
 				10000000000000000000000A /* RemoteFileBrowserView.swift in Sources */,
 				10000000000000000000000B /* CodexInputBarView.swift in Sources */,

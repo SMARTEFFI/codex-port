@@ -11,6 +11,7 @@ public enum HostProfileAuthMethod: Equatable, Sendable {
 }
 
 public struct HostProfileFormModel: Equatable, Sendable {
+    public var connectionMethod: HostConnectionMethodDraft
     public var name: String
     public var host: String
     public var port: String
@@ -20,10 +21,14 @@ public struct HostProfileFormModel: Equatable, Sendable {
     public var privateKeyLabel: String
     public var privateKey: String
     public var existingCredentialID: String?
+    public var relayServerEndpoint: String
+    public var pairingMaterial: String
+    public var deviceDisplayName: String
     public var codexPath: String
     public var defaultDirectory: String
 
     public init(
+        connectionMethod: HostConnectionMethodDraft = .directSSH,
         name: String = "",
         host: String = "",
         port: String = "22",
@@ -33,9 +38,13 @@ public struct HostProfileFormModel: Equatable, Sendable {
         privateKeyLabel: String = "",
         privateKey: String = "",
         existingCredentialID: String? = nil,
+        relayServerEndpoint: String = "",
+        pairingMaterial: String = "",
+        deviceDisplayName: String = "",
         codexPath: String = "codex",
         defaultDirectory: String = "~"
     ) {
+        self.connectionMethod = connectionMethod
         self.name = name
         self.host = host
         self.port = port
@@ -45,6 +54,9 @@ public struct HostProfileFormModel: Equatable, Sendable {
         self.privateKeyLabel = privateKeyLabel
         self.privateKey = privateKey
         self.existingCredentialID = existingCredentialID
+        self.relayServerEndpoint = relayServerEndpoint
+        self.pairingMaterial = pairingMaterial
+        self.deviceDisplayName = deviceDisplayName
         self.codexPath = codexPath
         self.defaultDirectory = defaultDirectory
     }
@@ -54,6 +66,10 @@ public struct HostProfileFormModel: Equatable, Sendable {
         let privateKeyLabel: String
         let existingCredentialID: String?
         switch profile.auth {
+        case .none:
+            authMethod = .password
+            privateKeyLabel = ""
+            existingCredentialID = nil
         case let .password(credentialID):
             authMethod = .password
             privateKeyLabel = ""
@@ -65,6 +81,7 @@ public struct HostProfileFormModel: Equatable, Sendable {
         }
 
         self.init(
+            connectionMethod: HostConnectionMethodDraft(profile.connectionMethod),
             name: profile.name,
             host: profile.host,
             port: String(profile.port),
@@ -74,6 +91,9 @@ public struct HostProfileFormModel: Equatable, Sendable {
             privateKeyLabel: privateKeyLabel,
             privateKey: "",
             existingCredentialID: existingCredentialID,
+            relayServerEndpoint: profile.connectionMethod.relayHost?.relayEndpointURL.flatMap(Self.relayBaseURLString(from:)) ?? "",
+            pairingMaterial: "",
+            deviceDisplayName: "",
             codexPath: profile.codexPath,
             defaultDirectory: profile.defaultDirectory
         )
@@ -83,47 +103,105 @@ public struct HostProfileFormModel: Equatable, Sendable {
         AppServerStartupCommand(codexPath: trimmed(codexPath)).shellCommand
     }
 
+    public mutating func selectRelayConnection(defaultRelayEndpoint: String = "") {
+        let endpoint = trimmed(relayServerEndpoint).isEmpty ? defaultRelayEndpoint : relayServerEndpoint
+        relayServerEndpoint = endpoint
+        connectionMethod = .relay(
+            RelayHostDraft(
+                hostAgentID: UUID(),
+                displayName: trimmed(name).isEmpty ? "Mac HostAgent" : trimmed(name),
+                userName: trimmed(username),
+                pairingRecordID: "pending-pairing",
+                presence: .offline(),
+                diagnosticsSummary: "Pairing pending"
+            )
+        )
+        authMethod = .password
+        password = ""
+        privateKey = ""
+        privateKeyLabel = ""
+        existingCredentialID = nil
+        if port == "22" {
+            port = ""
+        }
+    }
+
+    public mutating func selectDirectSSHConnection() {
+        connectionMethod = .directSSH
+        relayServerEndpoint = ""
+        pairingMaterial = ""
+        deviceDisplayName = ""
+        if trimmed(port).isEmpty {
+            port = "22"
+        }
+    }
+
+    public func makeRelayPairingInput(defaultDeviceDisplayName: String) throws -> RelayHostProductionPairingInput {
+        try RelayHostProductionPairingInput(
+            pairingMaterial: pairingMaterial,
+            deviceDisplayName: trimmed(deviceDisplayName).isEmpty ? defaultDeviceDisplayName : deviceDisplayName
+        )
+    }
+
     public func makeDraft() throws -> HostProfileDraft {
         let name = try required(self.name, field: "name")
-        let host = try required(self.host, field: "host")
-        let username = try required(self.username, field: "username")
         let codexPath = try required(self.codexPath, field: "codexPath")
         let defaultDirectory = try required(self.defaultDirectory, field: "defaultDirectory")
-        let port = try parsedPort()
         let auth: HostProfileDraftAuth
-        switch authMethod {
-        case .password:
-            if trimmed(password).isEmpty, let existingCredentialID {
-                auth = .existingPassword(credentialID: existingCredentialID)
-            } else {
-                auth = .password(
-                    try required(self.password, field: "password"),
-                    protection: .localEncrypted
-                )
+        switch connectionMethod {
+        case let .relay(relayHost):
+            auth = .none
+            let username = trimmed(self.username).isEmpty ? relayHost.userName : trimmed(self.username)
+            return HostProfileDraft(
+                connectionMethod: .relay(relayHost),
+                name: name,
+                host: relayHost.hostAgentID.uuidString.lowercased(),
+                port: 443,
+                username: username,
+                auth: auth,
+                codexPath: codexPath,
+                startupCommand: "",
+                defaultDirectory: defaultDirectory
+            )
+        case .directSSH:
+            let host = try required(self.host, field: "host")
+            let username = try required(self.username, field: "username")
+            let port = try parsedPort()
+            switch authMethod {
+            case .password:
+                if trimmed(password).isEmpty, let existingCredentialID {
+                    auth = .existingPassword(credentialID: existingCredentialID)
+                } else {
+                    auth = .password(
+                        try required(self.password, field: "password"),
+                        protection: .localEncrypted
+                    )
+                }
+            case .key:
+                let label = try required(self.privateKeyLabel, field: "privateKeyLabel")
+                if trimmed(privateKey).isEmpty, let existingCredentialID {
+                    auth = .existingKey(label: label, credentialID: existingCredentialID)
+                } else {
+                    auth = .key(
+                        label: label,
+                        privateKey: try required(self.privateKey, field: "privateKey"),
+                        protection: .localEncrypted
+                    )
+                }
             }
-        case .key:
-            let label = try required(self.privateKeyLabel, field: "privateKeyLabel")
-            if trimmed(privateKey).isEmpty, let existingCredentialID {
-                auth = .existingKey(label: label, credentialID: existingCredentialID)
-            } else {
-                auth = .key(
-                    label: label,
-                    privateKey: try required(self.privateKey, field: "privateKey"),
-                    protection: .localEncrypted
-                )
-            }
-        }
 
-        return HostProfileDraft(
-            name: name,
-            host: host,
-            port: port,
-            username: username,
-            auth: auth,
-            codexPath: codexPath,
-            startupCommand: AppServerStartupCommand(codexPath: codexPath).shellCommand,
-            defaultDirectory: defaultDirectory
-        )
+            return HostProfileDraft(
+                connectionMethod: connectionMethod,
+                name: name,
+                host: host,
+                port: port,
+                username: username,
+                auth: auth,
+                codexPath: codexPath,
+                startupCommand: AppServerStartupCommand(codexPath: codexPath).shellCommand,
+                defaultDirectory: defaultDirectory
+            )
+        }
     }
 
     private func parsedPort() throws -> Int {
@@ -144,5 +222,43 @@ public struct HostProfileFormModel: Equatable, Sendable {
 
     private func trimmed(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func relayBaseURLString(from relayEndpointURL: URL) -> String? {
+        var components = URLComponents(url: relayEndpointURL, resolvingAgainstBaseURL: false)
+        switch components?.scheme {
+        case "wss":
+            components?.scheme = "https"
+        case "ws":
+            components?.scheme = "http"
+        default:
+            break
+        }
+        components?.path = ""
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url?.absoluteString
+    }
+}
+
+private extension HostConnectionMethodDraft {
+    init(_ method: HostConnectionMethod) {
+        switch method {
+        case .directSSH:
+            self = .directSSH
+        case let .relay(host):
+            self = .relay(
+                RelayHostDraft(
+                    hostAgentID: host.hostAgentID,
+                    displayName: host.displayName,
+                    userName: host.userName,
+                    pairingRecordID: host.pairingRecordID,
+                    deviceID: host.deviceID,
+                    relayEndpointURL: host.relayEndpointURL,
+                    presence: host.presence,
+                    diagnosticsSummary: host.diagnosticsSummary
+                )
+            )
+        }
     }
 }

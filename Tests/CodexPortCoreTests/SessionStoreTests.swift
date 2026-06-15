@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import CodexPortCore
+@testable import CodexPortShared
 
 @Test func sessionStoreReadsResumesAndStartsTextTurnInOrder() async throws {
     let protocolClient = FakeCodexProtocol()
@@ -266,6 +267,72 @@ import Testing
         .userMessage("user 7"),
         .assistantMessage("assistant 7")
     ])
+}
+
+@Test func sessionStoreWindowsRelayHistoryLoadedItemsAndLoadsEarlierFromLocalCache() async throws {
+    let protocolClient = FakeCodexProtocol()
+    let store = SessionStore(
+        protocolClient: protocolClient,
+        initialVisibleItemLimit: 6,
+        legacyHistoryItemPageSize: 4
+    )
+    let relayItems = (0..<12).map { index in
+        RelayThreadHistoryItem.assistantMessage("relay item \(index)")
+    }
+
+    store.receive(relayEvent: .threadHistoryLoaded(threadID: "thread-1", items: relayItems, status: .completed))
+
+    #expect(store.totalHistoryItemCount == 12)
+    #expect(store.loadedHistoryItemCount == 6)
+    #expect(store.hasEarlierHistory == true)
+    #expect(store.visibleItems == (6..<12).map { .assistantMessage("relay item \($0)") })
+
+    try await store.loadEarlierHistory()
+
+    #expect(store.loadedHistoryItemCount == 10)
+    #expect(store.hasEarlierHistory == true)
+    #expect(store.visibleItems == (2..<12).map { .assistantMessage("relay item \($0)") })
+}
+
+@Test func sessionStorePrependsRelayHistoryPagesWithoutDuplicatingOverlappingItems() async throws {
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    store.receive(relayHistoryPage: RelayThreadHistoryPage(
+        requestID: "initial",
+        threadID: "thread-1",
+        items: [
+            .userMessage("recent question"),
+            .assistantMessage("recent answer"),
+        ],
+        status: .completed,
+        nextCursor: "older-cursor-1"
+    ))
+    store.receive(relayEvent: .assistantTextDelta(
+        turnID: "live-turn",
+        itemID: "live-assistant",
+        text: "live delta"
+    ))
+
+    store.receive(relayHistoryPage: RelayThreadHistoryPage(
+        requestID: "history-request-1",
+        threadID: "thread-1",
+        items: [
+            .userMessage("older question"),
+            .assistantMessage("older answer"),
+            .userMessage("recent question"),
+            .assistantMessage("recent answer"),
+        ],
+        status: .completed,
+        nextCursor: nil
+    ))
+
+    #expect(store.visibleItems == [
+        .userMessage("older question"),
+        .assistantMessage("older answer"),
+        .userMessage("recent question"),
+        .assistantMessage("recent answer"),
+        .assistantMessage("live delta"),
+    ])
+    #expect(store.hasEarlierHistory == false)
 }
 
 @Test func sessionStoreSendsComposerAttachmentsPermissionAndPlanMode() async throws {

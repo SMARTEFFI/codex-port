@@ -7,6 +7,8 @@ struct RootView: View {
     @State private var profiles: [CodexPortCore.HostProfile] = []
     @State private var loadError: String?
     @State private var foregroundRefreshSignal = 0
+    @State private var launchAutomation: RelayHostLaunchAutomation?
+    @State private var didRunLaunchAutomation = false
     @StateObject private var connection: AppConnectionState
     @Environment(\.scenePhase) private var scenePhase
 
@@ -22,7 +24,7 @@ struct RootView: View {
                     Task {
                         await connection.connect(profile: profile)
                         profiles = store?.list() ?? profiles
-                        if connection.session != nil {
+                        if connection.connectedRoute != nil {
                             path.append(AppRoute.workspaces)
                         }
                     }
@@ -35,9 +37,6 @@ struct RootView: View {
                 },
                 onAddProfile: {
                     path.append(AppRoute.addHostProfile)
-                },
-                onOpenDiagnostics: {
-                    path.append(AppRoute.diagnostics)
                 }
             )
             .task {
@@ -45,6 +44,7 @@ struct RootView: View {
                 connection.onHostKeyTrusted = { pending in
                     markPendingHostKeyTrusted(pending)
                 }
+                await runLaunchAutomationIfNeeded()
             }
             .alert("配置加载失败", isPresented: Binding(
                 get: { loadError != nil },
@@ -74,6 +74,7 @@ struct RootView: View {
                 ConnectionLogSheet(
                     title: connection.connectionLogTitle,
                     logs: connection.connectionLogs,
+                    progressMessage: connection.connectionProgressMessage,
                     isConnecting: connection.isConnecting,
                     pendingHostKeyConfirmation: connection.pendingHostKeyConfirmation,
                     onRejectPendingHostKey: {
@@ -82,7 +83,7 @@ struct RootView: View {
                     onConfirmPendingHostKey: {
                         Task {
                             await connection.confirmPendingHostKeyAndConnect()
-                            if connection.session != nil {
+                            if connection.connectedRoute != nil {
                                 path.append(AppRoute.workspaces)
                             }
                         }
@@ -93,102 +94,7 @@ struct RootView: View {
                 .interactiveDismissDisabled(connection.isConnecting || connection.pendingHostKeyConfirmation != nil)
             }
             .navigationDestination(for: AppRoute.self) { route in
-                switch route {
-                case .addHostProfile:
-                    AddHostProfileView { draft in
-                        guard let store else { return }
-                        let profile = try store.create(draft)
-                        profiles.append(profile)
-                    }
-                case let .editHostProfile(id):
-                    if let profile = profiles.first(where: { $0.id == id }) {
-                        AddHostProfileView(mode: .edit(profile)) { draft in
-                            guard let store else { return }
-                            let updated = try store.update(id, with: draft)
-                            if let index = profiles.firstIndex(where: { $0.id == id }) {
-                                profiles[index] = updated
-                            } else {
-                                profiles = store.list()
-                            }
-                        }
-                    } else {
-                        ContentUnavailableView("Host 不存在", systemImage: "server.rack")
-                    }
-                case .workspaces:
-                    WorkspaceListView(
-                        grouping: $connection.grouping,
-                        projects: connection.projects,
-                        projectThreadGroups: connection.projectThreadGroups,
-                        dayThreadGroups: connection.dayThreadGroups,
-                        recentThreads: connection.recentThreads,
-                        startingThreadCWDs: connection.startingThreadCWDs,
-                        onOpenSession: { thread in
-                            connection.markThreadRead(thread.id)
-                            path.append(AppRoute.session(thread.id, isNew: false))
-                        },
-                        onStartProjectSession: { project in
-                            Task {
-                                if let threadID = await connection.startThread(cwd: project.cwd) {
-                                    path.append(AppRoute.session(threadID, isNew: true))
-                                }
-                            }
-                        },
-                        onBrowseWorkspace: {
-                            path.append(AppRoute.remoteBrowser)
-                        }
-                    )
-                    .overlay {
-                        if connection.isConnecting {
-                            ProgressView("正在连接 Codex")
-                                .padding()
-                                .background(.regularMaterial)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                    .refreshable {
-                        await connection.reloadWorkspaces()
-                    }
-                    .onAppear {
-                        Task {
-                            await connection.reloadWorkspaces()
-                        }
-                    }
-                    .task {
-                        await connection.reloadWorkspaces()
-                    }
-                case .remoteBrowser:
-                    RemoteFileBrowserView(
-                        store: connection.remoteBrowserStore,
-                        fallbackPath: "~",
-                        fallbackEntries: [],
-                        onSelectWorkspace: { cwd in
-                            Task {
-                                if let threadID = await connection.startThread(cwd: cwd) {
-                                    path.append(AppRoute.session(threadID, isNew: true))
-                                }
-                            }
-                        }
-                    )
-                case let .session(threadID, isNew):
-                    SessionDetailView(
-                        threadID: threadID,
-                        isNewThread: isNew,
-                        protocolClient: connection.session?.protocolClient,
-                        events: connection.session?.events,
-                        foregroundRefreshSignal: foregroundRefreshSignal
-                    )
-                case .diagnostics:
-                    DiagnosticsView(
-                        report: connection.diagnosticReport,
-                        profiles: profiles,
-                        isRunning: connection.isRunningDiagnostics,
-                        onRun: { profile in
-                            Task {
-                                await connection.runDiagnostics(profile: profile)
-                            }
-                        }
-                    )
-                }
+                destinationView(for: route)
             }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
@@ -197,7 +103,117 @@ struct RootView: View {
                     await connection.reloadWorkspaces()
                 }
             }
+            .onOpenURL { url in
+                Task {
+                    await handleOpenURL(url)
+                }
+            }
         }
+    }
+
+    @ViewBuilder
+    private func destinationView(for route: AppRoute) -> some View {
+        switch route {
+        case .addHostProfile:
+            AddHostProfileView { draft in
+                guard let store else { return }
+                let profile = try store.create(draft)
+                profiles.append(profile)
+            }
+        case let .editHostProfile(id):
+            editHostProfileDestination(id: id)
+        case .workspaces:
+            workspaceDestination()
+        case .remoteBrowser:
+            remoteBrowserDestination()
+        case let .session(threadID, isNew):
+            SessionDetailView(
+                threadID: threadID,
+                isNewThread: isNew,
+                protocolClient: connection.session?.protocolClient,
+                route: connection.connectedRoute,
+                foregroundRefreshSignal: foregroundRefreshSignal,
+                relayAutoprompt: relayAutoprompt(for: threadID)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func editHostProfileDestination(id: UUID) -> some View {
+        if let profile = profiles.first(where: { $0.id == id }) {
+            AddHostProfileView(mode: .edit(profile)) { draft in
+                guard let store else { return }
+                let updated = try store.update(id, with: draft)
+                if let index = profiles.firstIndex(where: { $0.id == id }) {
+                    profiles[index] = updated
+                } else {
+                    profiles = store.list()
+                }
+            }
+        } else {
+            ContentUnavailableView("Host 不存在", systemImage: "server.rack")
+        }
+    }
+
+    private func workspaceDestination() -> some View {
+        WorkspaceListView(
+            grouping: $connection.grouping,
+            projects: connection.projects,
+            projectThreadGroups: connection.projectThreadGroups,
+            dayThreadGroups: connection.dayThreadGroups,
+            recentThreads: connection.recentThreads,
+            emptyState: connection.connectedRoute?.isRelay == true && !connection.hasLoadedRelayThreadList ? .relayThreadListUnavailable : .directSSH,
+            isLoadingWorkspaces: connection.isReloadingWorkspaces,
+            startingThreadCWDs: connection.startingThreadCWDs,
+            onOpenSession: { thread in
+                connection.markThreadRead(thread.id)
+                path.append(AppRoute.session(thread.id, isNew: false))
+            },
+            onStartProjectSession: { project in
+                Task {
+                    if let threadID = await connection.startThread(cwd: project.cwd) {
+                        path.append(AppRoute.session(threadID, isNew: true))
+                    }
+                }
+            },
+            onBrowseWorkspace: {
+                path.append(AppRoute.remoteBrowser)
+            }
+        )
+        .overlay {
+            if connection.isConnecting {
+                ProgressView("正在连接 Codex")
+                    .padding()
+                    .background(.regularMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .refreshable {
+            await connection.reloadWorkspaces()
+        }
+        .onAppear {
+            Task {
+                await connection.reloadWorkspaces()
+            }
+        }
+        .task {
+            await connection.reloadWorkspaces()
+        }
+    }
+
+    private func remoteBrowserDestination() -> some View {
+        RemoteFileBrowserView(
+            store: connection.remoteBrowserStore,
+            fallbackPath: "~",
+            fallbackEntries: [],
+            onSelectWorkspace: { cwd in
+                Task {
+                    if let threadID = await connection.startThread(cwd: cwd) {
+                        path.append(AppRoute.session(threadID, isNew: true))
+                    }
+                }
+            }
+        )
     }
 
     private func loadProfilesIfNeeded() {
@@ -206,6 +222,7 @@ struct RootView: View {
             let documents = try Self.documentsDirectory()
             let repository = FileHostProfileRepository(fileURL: documents.appending(path: "host-profiles.json"))
             let loadedStore = try PersistentHostProfileStore(repository: repository, credentialVault: Self.makeCredentialVault())
+            launchAutomation = try Self.seedRelayHostIfRequested(into: loadedStore)
             store = loadedStore
             profiles = loadedStore.list()
         } catch {
@@ -240,6 +257,66 @@ struct RootView: View {
         }
     }
 
+    @MainActor
+    private func runLaunchAutomationIfNeeded() async {
+        guard !didRunLaunchAutomation, let launchAutomation, launchAutomation.plan.autoconnect else { return }
+        guard let profile = profiles.first(where: { launchAutomation.plan.matches($0, seed: launchAutomation.seed) }) else { return }
+        didRunLaunchAutomation = true
+        await connection.connect(profile: profile)
+        profiles = store?.list() ?? profiles
+        guard connection.connectedRoute != nil else { return }
+        path.append(AppRoute.workspaces)
+        if let threadID = launchAutomationTargetThreadID() {
+            path.append(AppRoute.session(threadID, isNew: false))
+        }
+    }
+
+    private func launchAutomationTargetThreadID() -> String? {
+        guard let route = connection.connectedRoute else { return nil }
+        if let threadID = launchAutomation?.plan.threadID,
+           route.relayThreadSummaries.contains(where: { $0.id == threadID })
+        {
+            return threadID
+        }
+        return route.relayThreadSummaries.first?.id
+    }
+
+    private func relayAutoprompt(for threadID: String) -> String? {
+        guard let launchAutomation,
+              launchAutomation.plan.autoconnect,
+              connection.connectedRoute?.relayThreadSummaries.contains(where: { $0.id == threadID }) == true
+        else {
+            return nil
+        }
+        return launchAutomation.plan.autoprompt
+    }
+
+    @MainActor
+    private func handleOpenURL(_ url: URL) async {
+        do {
+            let verificationLaunch = try RelayHostVerificationLaunchURL(url: url)
+            connection.useRelayTransportMode(.p2pWebRTCDataChannel)
+            try applyLaunchAutomation(verificationLaunch)
+            await runLaunchAutomationIfNeeded()
+        } catch RelayHostVerificationLaunchURLError.unsupportedURL {
+            return
+        } catch {
+            loadError = String(describing: error)
+        }
+    }
+
+    private func applyLaunchAutomation(_ verificationLaunch: RelayHostVerificationLaunchURL) throws {
+        loadProfilesIfNeeded()
+        guard let store else { return }
+        try store.seedRelayHostIfNeeded(verificationLaunch.seed)
+        launchAutomation = RelayHostLaunchAutomation(
+            seed: verificationLaunch.seed,
+            plan: verificationLaunch.plan
+        )
+        didRunLaunchAutomation = false
+        profiles = store.list()
+    }
+
     private static func makeConnectionState() -> AppConnectionState {
         let vault = (try? makeCredentialVault()) ?? VolatileCredentialVault()
         do {
@@ -257,6 +334,16 @@ struct RootView: View {
         try LocalEncryptedCredentialVault(directory: LocalEncryptedCredentialVault.defaultDirectory())
     }
 
+    private static func seedRelayHostIfRequested(into store: PersistentHostProfileStore) throws -> RelayHostLaunchAutomation? {
+        let environment = ProcessInfo.processInfo.environment
+        guard let seed = try? RelayHostLaunchSeed(environment: environment) else { return nil }
+        try store.seedRelayHostIfNeeded(seed)
+        return RelayHostLaunchAutomation(
+            seed: seed,
+            plan: RelayHostLaunchAutomationPlan(environment: environment)
+        )
+    }
+
     private static func documentsDirectory() throws -> URL {
         try FileManager.default.url(
             for: .documentDirectory,
@@ -265,6 +352,11 @@ struct RootView: View {
             create: true
         )
     }
+}
+
+private struct RelayHostLaunchAutomation {
+    var seed: RelayHostLaunchSeed
+    var plan: RelayHostLaunchAutomationPlan
 }
 
 private final class VolatileCredentialVault: CredentialVault {
@@ -285,17 +377,19 @@ enum AppRoute: Hashable {
     case workspaces
     case remoteBrowser
     case session(String, isNew: Bool)
-    case diagnostics
 }
 
 private struct ConnectionLogSheet: View {
     let title: String
     let logs: [ConnectionLogEntry]
+    let progressMessage: String
     let isConnecting: Bool
     let pendingHostKeyConfirmation: PendingHostKeyConfirmation?
     let onRejectPendingHostKey: () -> Void
     let onConfirmPendingHostKey: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var waitingSeconds = 0
+    private let progressTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         NavigationStack {
@@ -312,7 +406,7 @@ private struct ConnectionLogSheet: View {
                                     .foregroundStyle(.secondary)
                                 Text("RUN")
                                     .foregroundStyle(.blue)
-                                Text("waiting for remote response...")
+                                Text(progressText)
                                     .foregroundStyle(.primary)
                             }
                             .font(.system(.footnote, design: .monospaced))
@@ -341,6 +435,16 @@ private struct ConnectionLogSheet: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .background(Color(.systemGroupedBackground))
+            .onReceive(progressTimer) { _ in
+                guard isConnecting else {
+                    waitingSeconds = 0
+                    return
+                }
+                waitingSeconds += 1
+            }
+            .onChange(of: progressMessage) { _, _ in
+                waitingSeconds = 0
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("关闭") {
@@ -349,6 +453,11 @@ private struct ConnectionLogSheet: View {
                 }
             }
         }
+    }
+
+    private var progressText: String {
+        guard waitingSeconds >= 2 else { return progressMessage }
+        return "\(progressMessage) 已等待 \(waitingSeconds) 秒"
     }
 }
 

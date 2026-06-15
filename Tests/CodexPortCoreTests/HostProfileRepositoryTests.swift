@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import CodexPortCore
+@testable import CodexPortShared
 
 @Test func fileBackedHostProfileRepositoryPersistsProfilesWithoutSecretMaterial() throws {
     let directory = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString)
@@ -96,6 +97,71 @@ import Testing
 
     try reloaded.delete(profile.id)
     #expect(try repository.load() == [])
+}
+
+@Test func fileBackedHostProfileRepositoryPersistsRelayHostsWithoutSSHSecrets() throws {
+    let directory = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString)
+    let url = directory.appending(path: "profiles.json")
+    let repository = FileHostProfileRepository(fileURL: url)
+    let hostAgentID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let profile = HostProfile(
+        id: UUID(uuidString: "22222222-3333-4444-5555-666666666666")!,
+        connectionMethod: .relay(
+            RelayHost(
+                hostAgentID: hostAgentID,
+                displayName: "Mac Studio Agent",
+                userName: "chenm",
+                pairingRecordID: "pairing-record",
+                deviceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+                relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+                presence: .online(activeConnectionCount: 2),
+                diagnosticsSummary: "Host Agent online"
+            )
+        ),
+        name: "Mac Studio Relay",
+        host: "mac-studio.local",
+        port: 22,
+        username: "chenm",
+        auth: .none,
+        codexPath: "codex",
+        startupCommand: "",
+        defaultDirectory: "~/Projects",
+        knownHostFingerprint: nil
+    )
+
+    try repository.save([profile])
+
+    let rawJSON = try String(contentsOf: url, encoding: .utf8)
+    #expect(rawJSON.contains("pairing-record"))
+    #expect(rawJSON.contains("Mac Studio Agent"))
+    #expect(!rawJSON.contains("secret-password"))
+    #expect(!rawJSON.contains("private-key"))
+    #expect(!rawJSON.contains("bearer-token"))
+    #expect(try repository.load() == [profile])
+    #expect(try repository.load().first?.connectionMethod.relayHost?.relayEndpointURL == URL(string: "wss://relay.example.test/v0/streams")!)
+}
+
+@Test func persistentHostProfileStoreSeedsRelayHostOnlyOnceForAFKVerification() throws {
+    let directory = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString)
+    let repository = FileHostProfileRepository(fileURL: directory.appending(path: "profiles.json"))
+    let store = try PersistentHostProfileStore(repository: repository, credentialVault: InMemoryCredentialVault())
+    let seed = try RelayHostLaunchSeed(environment: [
+        "CODEXPORT_IOS_RELAY_HOST_ID": "11111111-2222-3333-4444-555555555555",
+        "CODEXPORT_IOS_RELAY_HOST_NAME": "Mac Studio Relay",
+        "CODEXPORT_IOS_RELAY_HOST_USER": "chenm",
+        "CODEXPORT_IOS_RELAY_DEVICE_ID": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+        "CODEXPORT_IOS_RELAY_PAIRING_RECORD_ID": "pairing-record",
+        "CODEXPORT_IOS_RELAY_ENDPOINT_URL": "ws://127.0.0.1:7788/v0/streams",
+    ])
+
+    let first = try store.seedRelayHostIfNeeded(seed)
+    let second = try store.seedRelayHostIfNeeded(seed)
+
+    #expect(first != nil)
+    #expect(second == nil)
+    #expect(store.list().count == 1)
+    #expect(store.list().first?.connectionMethod.relayHost?.pairingRecordID == "pairing-record")
+    #expect(store.list().first?.connectionMethod.relayHost?.relayEndpointURL == URL(string: "ws://127.0.0.1:7788/v0/streams"))
 }
 
 @Test func fileBackedKnownHostStorePersistsTrustedFingerprintsAcrossVerifierInstances() throws {

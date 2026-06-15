@@ -14,6 +14,8 @@ public final class HostCredentialResolver {
 
     public func resolve(_ profile: HostProfile, authorization: CredentialAuthorization) throws -> SSHCredential {
         switch profile.auth {
+        case .none:
+            throw SSHConnectionError.missingSSHCredential
         case let .password(credentialID):
             return .password(try vault.readSecret(id: credentialID, authorization: authorization))
         case let .key(_, credentialID):
@@ -40,6 +42,7 @@ public struct PresentedHostKey: Equatable, Sendable {
 }
 
 public enum SSHConnectionError: Error, Equatable {
+    case missingSSHCredential
     case unknownHostRejected(String)
     case hostKeyChanged(expected: String, presented: String)
     case authenticationRejected

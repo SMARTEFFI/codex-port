@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import CodexPortCore
+@testable import CodexPortShared
 
 @Test func userCanManageHostProfilesWithoutLeakingSavedPassword() throws {
     let vault = InMemoryCredentialVault()
@@ -109,4 +110,96 @@ import Testing
     #expect(saved.startupCommand == AppServerStartupCommand(codexPath: "codex").shellCommand)
     #expect(!saved.startupCommand.contains("daemon restart"))
     #expect(!saved.startupCommand.contains("rm -rf"))
+}
+
+@Test func hostProfileStoreKeepsDirectSSHAndRelayHostsIndependentForTheSameMac() throws {
+    let vault = InMemoryCredentialVault()
+    let store = HostProfileStore(credentialVault: vault)
+    let relayHostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+    let direct = try store.create(
+        HostProfileDraft(
+            connectionMethod: .directSSH,
+            name: "Mac Studio SSH",
+            host: "mac-studio.local",
+            port: 22,
+            username: "chenm",
+            auth: .password("secret-password", protection: .localEncrypted),
+            codexPath: "codex",
+            startupCommand: "codex app-server --listen stdio://",
+            defaultDirectory: "~/Projects"
+        )
+    )
+    let relay = try store.create(
+        HostProfileDraft(
+            connectionMethod: .relay(
+                RelayHostDraft(
+                    hostAgentID: relayHostID,
+                    displayName: "Mac Studio Agent",
+                    userName: "chenm",
+                    pairingRecordID: "pairing-record",
+                    presence: .offline(),
+                    diagnosticsSummary: "Not connected"
+                )
+            ),
+            name: "Mac Studio Relay",
+            host: "mac-studio.local",
+            port: 22,
+            username: "chenm",
+            auth: .none,
+            codexPath: "codex",
+            startupCommand: "",
+            defaultDirectory: "~/Projects"
+        )
+    )
+
+    try store.trustKnownHost(profileID: direct.id, fingerprint: "SHA256:direct")
+    let editedRelay = try store.update(
+        relay.id,
+        with: HostProfileDraft(
+            connectionMethod: .relay(
+                RelayHostDraft(
+                    hostAgentID: relayHostID,
+                    displayName: "Mac Studio Agent Renamed",
+                    userName: "chenm",
+                    pairingRecordID: "pairing-record",
+                    presence: .online(activeConnectionCount: 1),
+                    diagnosticsSummary: "Host Agent online"
+                )
+            ),
+            name: "Mac Studio Relay",
+            host: "mac-studio.local",
+            port: 22,
+            username: "chenm",
+            auth: .none,
+            codexPath: "codex",
+            startupCommand: "",
+            defaultDirectory: "~/Projects"
+        )
+    )
+
+    let profiles = store.list()
+    #expect(profiles.map(\.name) == ["Mac Studio SSH", "Mac Studio Relay"])
+    #expect(profiles[0].connectionMethod == .directSSH)
+    #expect(profiles[0].auth.credentialID == direct.auth.credentialID)
+    #expect(vault.rawStoredSecret(id: direct.auth.credentialID!) == "secret-password")
+    #expect(profiles[0].knownHostFingerprint == "SHA256:direct")
+    #expect(editedRelay.connectionMethod.relayHost?.displayName == "Mac Studio Agent Renamed")
+    #expect(editedRelay.connectionMethod.relayHost?.presence == .online(activeConnectionCount: 1))
+    #expect(editedRelay.auth == .none)
+    #expect(editedRelay.knownHostFingerprint == nil)
+}
+
+@Test func hostConnectionMethodReportsRelayState() {
+    let relay = RelayHost(
+        hostAgentID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: "pairing-record",
+        presence: .offline(lastSeenAt: nil),
+        diagnosticsSummary: "paired"
+    )
+
+    #expect(HostConnectionMethod.directSSH.isRelay == false)
+    #expect(HostConnectionMethod.relay(relay).isRelay == true)
 }

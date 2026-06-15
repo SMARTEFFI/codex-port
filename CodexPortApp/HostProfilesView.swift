@@ -7,7 +7,6 @@ struct HostProfilesView: View {
     let onEditProfile: (CodexPortCore.HostProfile) -> Void
     let onDeleteProfiles: (IndexSet) -> Void
     let onAddProfile: () -> Void
-    let onOpenDiagnostics: () -> Void
 
     var body: some View {
         List {
@@ -49,14 +48,6 @@ struct HostProfilesView: View {
             } footer: {
                 Text("凭据保存在应用沙盒内的本地加密文件，主机配置保存在本机。")
             }
-
-            Section {
-                Button(action: onOpenDiagnostics) {
-                    Label("打开诊断", systemImage: "stethoscope")
-                }
-            } footer: {
-                Text("诊断页将用于检查网络、认证、日志与连接状态。")
-            }
         }
         .navigationTitle("Host Profiles")
         .toolbar {
@@ -71,27 +62,39 @@ struct HostProfilesView: View {
 
 private struct HostProfileRow: View {
     let profile: CodexPortCore.HostProfile
+    private var presentation: HostProfileRowPresentation {
+        HostProfileRowPresentation(profile: profile)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(profile.name)
+                Text(presentation.title)
                     .font(.headline)
 
                 Spacer()
 
-                Text(profile.knownHostFingerprint == nil ? "待确认" : "已信任")
+                Text(presentation.statusText)
                     .font(.caption)
-                    .foregroundStyle(profile.knownHostFingerprint == nil ? Color.secondary : Color.green)
+                    .foregroundStyle(statusColor)
             }
 
-            Text("\(profile.username)@\(profile.host):\(profile.port)")
+            Text(presentation.subtitle)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+    }
+
+    private var statusColor: Color {
+        switch presentation.statusKind {
+        case .pending, .offline:
+            return Color.secondary
+        case .trusted, .online:
+            return Color.green
+        }
     }
 }
 
@@ -115,8 +118,7 @@ private struct HostProfileRow: View {
             onOpenWorkspaces: { _ in },
             onEditProfile: { _ in },
             onDeleteProfiles: { _ in },
-            onAddProfile: {},
-            onOpenDiagnostics: {}
+            onAddProfile: {}
         )
     }
 }

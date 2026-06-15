@@ -1,0 +1,24 @@
+services:
+  codexport-relay:
+    build:
+      context: ../..
+      dockerfile: deploy/codexport-relay/Dockerfile
+      network: host
+    image: codexport-relay:0.2.x
+    container_name: codexport-relay
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${CODEXPORT_RELAY_PUBLISHED_PORT:-8080}:8080"
+    volumes:
+      - codexport-relay-data:/var/lib/codexport-relay
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  codexport-relay-data:

@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public enum CredentialProtection: String, Codable, Equatable, Sendable {
     case localEncrypted
@@ -15,6 +16,7 @@ public enum CredentialVaultError: Error, Equatable {
 }
 
 public struct HostProfileDraft: Equatable, Sendable {
+    public var connectionMethod: HostConnectionMethodDraft
     public var name: String
     public var host: String
     public var port: Int
@@ -25,6 +27,7 @@ public struct HostProfileDraft: Equatable, Sendable {
     public var defaultDirectory: String
 
     public init(
+        connectionMethod: HostConnectionMethodDraft = .directSSH,
         name: String,
         host: String,
         port: Int,
@@ -34,6 +37,7 @@ public struct HostProfileDraft: Equatable, Sendable {
         startupCommand: String,
         defaultDirectory: String
     ) {
+        self.connectionMethod = connectionMethod
         self.name = name
         self.host = host
         self.port = port
@@ -46,14 +50,101 @@ public struct HostProfileDraft: Equatable, Sendable {
 }
 
 public enum HostProfileDraftAuth: Equatable, Sendable {
+    case none
     case password(String, protection: CredentialProtection)
     case key(label: String, privateKey: String, protection: CredentialProtection)
     case existingPassword(credentialID: String)
     case existingKey(label: String, credentialID: String)
 }
 
+public enum HostConnectionMethodDraft: Equatable, Sendable {
+    case directSSH
+    case relay(RelayHostDraft)
+}
+
+public struct RelayHostDraft: Equatable, Sendable {
+    public var hostAgentID: UUID
+    public var displayName: String
+    public var userName: String
+    public var pairingRecordID: String
+    public var deviceID: UUID?
+    public var relayEndpointURL: URL?
+    public var presence: RelayHostPresence
+    public var diagnosticsSummary: String
+
+    public init(
+        hostAgentID: UUID,
+        displayName: String,
+        userName: String,
+        pairingRecordID: String,
+        deviceID: UUID? = nil,
+        relayEndpointURL: URL? = nil,
+        presence: RelayHostPresence,
+        diagnosticsSummary: String
+    ) {
+        self.hostAgentID = hostAgentID
+        self.displayName = displayName
+        self.userName = userName
+        self.pairingRecordID = pairingRecordID
+        self.deviceID = deviceID
+        self.relayEndpointURL = relayEndpointURL
+        self.presence = presence
+        self.diagnosticsSummary = diagnosticsSummary
+    }
+}
+
+public enum HostConnectionMethod: Equatable, Sendable {
+    case directSSH
+    case relay(RelayHost)
+
+    public var relayHost: RelayHost? {
+        switch self {
+        case .directSSH:
+            nil
+        case let .relay(host):
+            host
+        }
+    }
+
+    public var isRelay: Bool {
+        relayHost != nil
+    }
+}
+
+public struct RelayHost: Equatable, Sendable {
+    public var hostAgentID: UUID
+    public var displayName: String
+    public var userName: String
+    public var pairingRecordID: String
+    public var deviceID: UUID?
+    public var relayEndpointURL: URL?
+    public var presence: RelayHostPresence
+    public var diagnosticsSummary: String
+
+    public init(
+        hostAgentID: UUID,
+        displayName: String,
+        userName: String,
+        pairingRecordID: String,
+        deviceID: UUID? = nil,
+        relayEndpointURL: URL? = nil,
+        presence: RelayHostPresence,
+        diagnosticsSummary: String
+    ) {
+        self.hostAgentID = hostAgentID
+        self.displayName = displayName
+        self.userName = userName
+        self.pairingRecordID = pairingRecordID
+        self.deviceID = deviceID
+        self.relayEndpointURL = relayEndpointURL
+        self.presence = presence
+        self.diagnosticsSummary = diagnosticsSummary
+    }
+}
+
 public struct HostProfile: Equatable, Identifiable, Sendable {
     public var id: UUID
+    public var connectionMethod: HostConnectionMethod
     public var name: String
     public var host: String
     public var port: Int
@@ -66,6 +157,7 @@ public struct HostProfile: Equatable, Identifiable, Sendable {
 
     public init(
         id: UUID,
+        connectionMethod: HostConnectionMethod = .directSSH,
         name: String,
         host: String,
         port: Int,
@@ -77,6 +169,7 @@ public struct HostProfile: Equatable, Identifiable, Sendable {
         knownHostFingerprint: String?
     ) {
         self.id = id
+        self.connectionMethod = connectionMethod
         self.name = name
         self.host = host
         self.port = port
@@ -90,11 +183,14 @@ public struct HostProfile: Equatable, Identifiable, Sendable {
 }
 
 public enum HostProfileAuth: Equatable, Sendable {
+    case none
     case password(credentialID: String)
     case key(label: String, credentialID: String)
 
     public var credentialID: String? {
         switch self {
+        case .none:
+            return nil
         case let .password(credentialID):
             return credentialID
         case let .key(_, credentialID):
@@ -152,6 +248,8 @@ public final class HostProfileStore {
     private func makeProfile(id: UUID, draft: HostProfileDraft, knownHostFingerprint: String?) throws -> HostProfile {
         let auth: HostProfileAuth
         switch draft.auth {
+        case .none:
+            auth = .none
         case let .password(secret, protection):
             auth = .password(credentialID: try credentialVault.saveSecret(secret, protection: protection))
         case let .key(label, privateKey, protection):
@@ -163,16 +261,24 @@ public final class HostProfileStore {
         }
         return HostProfile(
             id: id,
+            connectionMethod: HostConnectionMethod(draft.connectionMethod),
             name: draft.name,
             host: draft.host,
             port: draft.port,
             username: draft.username,
             auth: auth,
             codexPath: draft.codexPath,
-            startupCommand: AppServerStartupCommand(codexPath: draft.codexPath).shellCommand,
+            startupCommand: draft.normalizedStartupCommand,
             defaultDirectory: draft.defaultDirectory,
             knownHostFingerprint: knownHostFingerprint
         )
+    }
+
+    public func trustKnownHost(profileID: UUID, fingerprint: String) throws {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            throw HostProfileStoreError.notFound
+        }
+        profiles[index].knownHostFingerprint = fingerprint
     }
 }
 
@@ -183,10 +289,49 @@ public enum HostProfileStoreError: Error, Equatable {
 extension HostProfileDraftAuth {
     var replacesStoredCredential: Bool {
         switch self {
+        case .none:
+            return false
         case .password, .key:
             return true
         case .existingPassword, .existingKey:
             return false
+        }
+    }
+}
+
+extension HostConnectionMethod {
+    init(_ draft: HostConnectionMethodDraft) {
+        switch draft {
+        case .directSSH:
+            self = .directSSH
+        case let .relay(relay):
+            self = .relay(RelayHost(relay))
+        }
+    }
+}
+
+extension RelayHost {
+    init(_ draft: RelayHostDraft) {
+        self.init(
+            hostAgentID: draft.hostAgentID,
+            displayName: draft.displayName,
+            userName: draft.userName,
+            pairingRecordID: draft.pairingRecordID,
+            deviceID: draft.deviceID,
+            relayEndpointURL: draft.relayEndpointURL,
+            presence: draft.presence,
+            diagnosticsSummary: draft.diagnosticsSummary
+        )
+    }
+}
+
+extension HostProfileDraft {
+    var normalizedStartupCommand: String {
+        switch connectionMethod {
+        case .directSSH:
+            AppServerStartupCommand(codexPath: codexPath).shellCommand
+        case .relay:
+            startupCommand
         }
     }
 }
