@@ -589,6 +589,18 @@ final class AppConnectionState: ObservableObject {
                 return "HostAgent 读取 Codex 会话列表失败：\(reason)"
             }
         }
+        if let p2p = error as? RelayP2PSessionTransportFactoryError {
+            switch p2p {
+            case .hostAgentDidNotAnswer:
+                return "HostAgent 在线状态已过期或未响应 WebRTC 连接。请确认 Mac 端 HostAgent 菜单应用正在运行后重试。"
+            case .missingDeviceID:
+                return "配对记录缺少设备标识。请重新配对 HostAgent。"
+            case .notAuthorizedToSignal:
+                return "当前设备未获准连接该 HostAgent。请重新配对。"
+            case .pairingRecordMismatch:
+                return "HostAgent 配对记录不匹配。请重新配对。"
+            }
+        }
         return String(describing: error)
     }
 

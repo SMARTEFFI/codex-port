@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import CodexPortCore
 @testable import CodexPortShared
+@testable import CodexPortWebRTC
 
 @Test func relayP2PSessionTransportFactoryOpensAuthorizedDataChannelTransport() async throws {
     let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -214,6 +215,50 @@ import Testing
     }
 }
 
+@Test func relayP2PSessionTransportFactoryMapsMissingWebRTCAnswerToStaleHostAgent() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let relayHost = RelayHost(
+        hostAgentID: hostID,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: "pairing-\(hostID.uuidString)-\(deviceID.uuidString)",
+        deviceID: deviceID,
+        relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+        presence: .online(activeConnectionCount: 1),
+        diagnosticsSummary: "paired"
+    )
+    let factory = RelayP2PSessionTransportFactory(
+        signalingClient: RelayP2PSignalingClient(
+            relayBaseURL: URL(string: "https://relay.example.test")!,
+            httpClient: RelayP2PSignalingRecordingHTTPClient(
+                presenceResponse: RelayP2PPresenceResponse(
+                    hostID: hostID,
+                    deviceID: deviceID,
+                    presence: .online,
+                    authorization: .authorizedToSignal,
+                    pairingRecordID: relayHost.pairingRecordID,
+                    activeConnectionCount: 1
+                ),
+                openResponse: RelayP2POpenSessionResponse(
+                    sessionID: UUID(uuidString: "22222222-3333-4444-5555-666666666666")!,
+                    hostID: hostID,
+                    deviceID: deviceID,
+                    pairingRecordID: relayHost.pairingRecordID,
+                    selectedVersion: .v0_2_0,
+                    openedAtUnixTime: 100
+                ),
+                drainResponse: RelayP2PDrainMessagesResponse(messages: [])
+            )
+        ),
+        dataChannelFactory: FailingRelayP2PDataChannelFactory(error: WebRTCPlatformRuntimeError.answerTimedOut)
+    )
+
+    await #expect(throws: RelayP2PSessionTransportFactoryError.hostAgentDidNotAnswer) {
+        _ = try await factory.makeTransport(for: relayHost)
+    }
+}
+
 private final class RecordingRelayP2PDataChannelFactory: RelayP2PDataChannelFactory, @unchecked Sendable {
     let transport: LoopbackWebRTCDataChannelTransport
     private(set) var openRequest: RelayP2PDataChannelOpenRequest?
@@ -225,6 +270,14 @@ private final class RecordingRelayP2PDataChannelFactory: RelayP2PDataChannelFact
     func openDataChannel(_ request: RelayP2PDataChannelOpenRequest) async throws -> any WebRTCDataChannelTransport {
         openRequest = request
         return transport
+    }
+}
+
+private struct FailingRelayP2PDataChannelFactory: RelayP2PDataChannelFactory {
+    var error: Error
+
+    func openDataChannel(_ request: RelayP2PDataChannelOpenRequest) async throws -> any WebRTCDataChannelTransport {
+        throw error
     }
 }
 

@@ -406,6 +406,9 @@ private enum RelayReadinessFailureClassifier {
         if normalized.contains("pairing") || message.contains("配对") {
             return .pairingInvalid
         }
+        if normalized.contains("didnotanswer") || message.contains("未响应 WebRTC") || message.contains("在线状态已过期") {
+            return .hostAgentUnavailable
+        }
         if normalized.contains("timeout") || message.contains("超时") {
             return .threadListTimeout
         }

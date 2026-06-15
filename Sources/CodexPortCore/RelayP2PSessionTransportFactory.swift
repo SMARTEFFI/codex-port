@@ -1,5 +1,6 @@
 import Foundation
 import CodexPortShared
+import CodexPortWebRTC
 
 public struct RelayP2PDataChannelOpenRequest: Equatable, Sendable {
     public var relayHost: RelayHost
@@ -46,10 +47,15 @@ public struct RelayP2PSessionTransportFactory: Sendable {
             deviceID: deviceID,
             pairingRecordID: relayHost.pairingRecordID
         )
-        let dataChannel = try await dataChannelFactory.openDataChannel(RelayP2PDataChannelOpenRequest(
-            relayHost: relayHost,
-            session: session
-        ))
+        let dataChannel: any WebRTCDataChannelTransport
+        do {
+            dataChannel = try await dataChannelFactory.openDataChannel(RelayP2PDataChannelOpenRequest(
+                relayHost: relayHost,
+                session: session
+            ))
+        } catch WebRTCPlatformRuntimeError.answerTimedOut {
+            throw RelayP2PSessionTransportFactoryError.hostAgentDidNotAnswer
+        }
         return ClientHostSessionDataChannelTransport(dataChannel: dataChannel)
     }
 
@@ -64,4 +70,5 @@ public enum RelayP2PSessionTransportFactoryError: Error, Equatable, Sendable {
     case missingDeviceID
     case notAuthorizedToSignal(RelayP2PAuthorizationStatus)
     case pairingRecordMismatch(expected: String, actual: String?)
+    case hostAgentDidNotAnswer
 }
