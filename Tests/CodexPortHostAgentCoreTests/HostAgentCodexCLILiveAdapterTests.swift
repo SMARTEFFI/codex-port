@@ -215,6 +215,35 @@ import Testing
         ])
     ))
     await transport.deliver(ControlJSONRPCNotification(
+        method: "item/started",
+        params: .object([
+            "turnId": .string("turn-remote"),
+            "item": .object([
+                "id": .string("item-tool"),
+                "type": .string("mcpToolCall"),
+                "name": .string("shell"),
+            ]),
+        ])
+    ))
+    await transport.deliver(ControlJSONRPCNotification(
+        method: "item/completed",
+        params: .object([
+            "turnId": .string("turn-remote"),
+            "item": .object([
+                "id": .string("item-tool"),
+                "type": .string("mcpToolCall"),
+                "result": .object([
+                    "content": .array([
+                        .object([
+                            "type": .string("text"),
+                            "text": .string("tool output"),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ])
+    ))
+    await transport.deliver(ControlJSONRPCNotification(
         method: "item/completed",
         params: .object([
             "turnId": .string("turn-remote"),
@@ -236,10 +265,12 @@ import Testing
         ])
     ))
 
-    let mappedEvents = await collectNext(4, from: &events)
+    let mappedEvents = await collectNext(6, from: &events)
     assertProducerEvents(mappedEvents, contain: [
         .userMessage(turnID: "turn-remote", itemID: "write-1", text: "Hi from iPhone"),
         .assistantTextDelta(turnID: "turn-remote", itemID: "item-agent", text: "收到"),
+        .commandOutputDelta(turnID: "turn-remote", itemID: "item-tool", text: "开始工具调用：shell\n"),
+        .commandOutputDelta(turnID: "turn-remote", itemID: "item-tool", text: "tool output"),
         .assistantTextDelta(turnID: "turn-remote", itemID: "item-agent", text: "收到。"),
         .turnCompleted(turnID: "turn-remote"),
     ])

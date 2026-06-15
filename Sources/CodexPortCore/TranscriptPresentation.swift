@@ -159,7 +159,7 @@ public enum TranscriptPresentation {
         case .commandOutput, .fileChange:
             return "正在工作..."
         case .assistantMessage:
-            return nil
+            return "正在回复..."
         }
     }
 }

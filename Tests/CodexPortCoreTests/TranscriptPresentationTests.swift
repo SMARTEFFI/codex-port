@@ -127,7 +127,7 @@ import Testing
     #expect(rows.isEmpty)
 }
 
-@Test func transcriptPresentationHidesThinkingAfterFirstAssistantOrToolOutput() {
+@Test func transcriptPresentationKeepsReplyingRowAfterAssistantOutputWhileRunning() {
     let assistantRows = TranscriptPresentation.rows(
         for: [.userMessage("继续"), .assistantMessage("开始处理")],
         status: .running
@@ -137,7 +137,8 @@ import Testing
         status: .completed
     )
 
-    #expect(assistantRows.map(\.kind) == [.userBubble, .assistantText])
+    #expect(assistantRows.map(\.kind) == [.userBubble, .assistantText, .thinking])
+    #expect(assistantRows.last?.body == "正在回复...")
     #expect(completedRows.map(\.kind) == [.userBubble])
 }
 
