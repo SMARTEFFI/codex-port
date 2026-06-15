@@ -9,9 +9,11 @@ HOST_NAME="${CODEXPORT_RELAY_HOST_NAME:-CodexPort Dev Mac}"
 HOST_USER="${CODEXPORT_RELAY_HOST_USER:-${USER:-macos}}"
 RELAY_BASE_URL="${CODEXPORT_RELAY_BASE_URL:-https://codexport.smarteffi.net}"
 CODEX_CONTROL_SOCKET_PATH="${CODEXPORT_CODEX_CONTROL_SOCKET_PATH:-$HOME/.codex/app-server-control/app-server-control.sock}"
-WEBRTC_SIDECAR_PATH="${CODEXPORT_WEBRTC_SIDECAR_PATH:-$ROOT_DIR/.scratch/webrtc-sidecar/codexport-webrtc-sidecar}"
+WEBRTC_SIDECAR_DEFAULT_PATH="$ROOT_DIR/.scratch/webrtc-sidecar/CodexPort WebRTC Sidecar.app/Contents/MacOS/codexport-webrtc-sidecar"
+WEBRTC_SIDECAR_PATH="${CODEXPORT_WEBRTC_SIDECAR_PATH:-$WEBRTC_SIDECAR_DEFAULT_PATH}"
 WEBRTC_SIDECAR_ARGUMENTS_JSON="${CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON:-[\"--stdio-jsonl\"]}"
-MENU_EXECUTABLE="${CODEXPORT_HOST_AGENT_MENU_EXECUTABLE:-$ROOT_DIR/.build/debug/codexport-host-agent-menu}"
+MENU_APP_PATH="${CODEXPORT_HOST_AGENT_MENU_APP_PATH:-$ROOT_DIR/.scratch/apps/CodexPort Host Agent.app}"
+MENU_EXECUTABLE="${CODEXPORT_HOST_AGENT_MENU_EXECUTABLE:-$MENU_APP_PATH/Contents/MacOS/codexport-host-agent-menu}"
 LOG_DIR="$ROOT_DIR/.scratch/logs"
 RUNTIME_DIR="$ROOT_DIR/.scratch/runtime"
 STDOUT_LOG="$LOG_DIR/hostagent-menu-p2p.out"
@@ -27,12 +29,12 @@ xml_escape() {
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-echo "Building HostAgent menu executable..." >&2
-swift build --product codexport-host-agent-menu >&2
+echo "Building HostAgent menu app..." >&2
+scripts/build-host-agent-app.sh >&2
 
 if [[ "${CODEXPORT_SKIP_WEBRTC_SIDECAR_BUILD:-0}" != "1" ]]; then
   echo "Building WebRTC sidecar..." >&2
-  scripts/build-webrtc-sidecar.sh >&2
+  WEBRTC_SIDECAR_PATH="$(scripts/build-webrtc-sidecar.sh | tail -n 1)"
 fi
 
 echo "Stopping previous HostAgent processes..." >&2
@@ -41,6 +43,7 @@ launchctl bootout "gui/$(id -u)/${LAUNCHD_LABEL}" >/dev/null 2>&1 || true
 pkill -x codexport-host-agent-menu >/dev/null 2>&1 || true
 pkill -f '/codexport-host-agent --p2p-listen' >/dev/null 2>&1 || true
 pkill -f '/codexport-webrtc-sidecar --stdio-jsonl' >/dev/null 2>&1 || true
+pkill -f 'CodexPort WebRTC Sidecar.app/Contents/MacOS/codexport-webrtc-sidecar' >/dev/null 2>&1 || true
 
 cat > "$LAUNCHD_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

@@ -81,7 +81,7 @@ HOST_ID="${CODEXPORT_RELAY_HOST_ID:-11111111-2222-3333-4444-555555555555}"
 RELAY_BASE_URL="${CODEXPORT_RELAY_BASE_URL:-https://codexport.smarteffi.net}"
 CODEX_CONTROL_SOCKET_PATH="${CODEXPORT_CODEX_CONTROL_SOCKET_PATH:-$HOME/.codex/app-server-control/app-server-control.sock}"
 HOSTAGENT_EXECUTABLE="${CODEXPORT_HOSTAGENT_EXECUTABLE:-$ROOT_DIR/.build/debug/codexport-host-agent}"
-WEBRTC_SIDECAR_PATH="${CODEXPORT_WEBRTC_SIDECAR_PATH:-$ROOT_DIR/.scratch/webrtc-sidecar/codexport-webrtc-sidecar}"
+WEBRTC_SIDECAR_PATH="${CODEXPORT_WEBRTC_SIDECAR_PATH:-$ROOT_DIR/.scratch/webrtc-sidecar/CodexPort WebRTC Sidecar.app/Contents/MacOS/codexport-webrtc-sidecar}"
 
 PASS_COUNT=0
 WARN_COUNT=0

@@ -1,12 +1,16 @@
 # CodexPort Host Agent macOS App
 
-`codexport-host-agent-menu` is a SwiftPM-built menu-bar executable. The
-temporary `.scratch/apps/CodexPort Host Agent.app` wrapper is useful for bundle
-layout work, but it is not the authoritative HITL start path until the project
-has a properly signed macOS app target.
+`codexport-host-agent-menu` is a SwiftPM-built menu-bar executable wrapped in a
+stable macOS menu-bar app at `.scratch/apps/CodexPort Host Agent.app`. The wrapper
+uses the fixed bundle identifier `com.smarteffi.codexport.hostagent` and is signed
+with the first available local Apple codesigning identity unless
+`CODEXPORT_CODESIGN_IDENTITY` overrides it.
 
-For #63/#74 HITL, use the shared helper or the menu helper so the run always
-uses the latest compiled HostAgent bits.
+The WebRTC helper is also wrapped as `.scratch/webrtc-sidecar/CodexPort WebRTC
+Sidecar.app` with bundle identifier `com.smarteffi.codexport.webrtc-sidecar`.
+Both bundles include `NSLocalNetworkUsageDescription` so macOS Local Network
+privacy prompts bind to stable app identities instead of rebuilt ad-hoc
+executables.
 
 ## Build
 
@@ -20,25 +24,26 @@ The generated debug wrapper is:
 .scratch/apps/CodexPort Host Agent.app
 ```
 
-On this machine, direct execution through that temporary `.app` wrapper can be
-rejected by AppleSystemPolicy/AMFI because the copied SwiftPM debug executable is
-ad-hoc signed. Treat that as a packaging/signing task, not as evidence that the
-HostAgent product cannot run.
+Verify local-network signing before manual device validation:
+
+```bash
+scripts/verify-hostagent-local-network-signing.sh
+```
 
 ## Menu P2P Start Path
 
-Use this path for manual pairing from the menu bar while the temporary `.app`
-wrapper remains a packaging task:
+Use this path for manual pairing from the menu bar:
 
 ```bash
 scripts/start-host-agent-menu-p2p.sh
 ```
 
-The helper builds `codexport-host-agent-menu`, builds the WebRTC sidecar, stops
-older CLI/menu HostAgent processes, and starts the menu executable through a
-run-scoped LaunchAgent. The LaunchAgent uses `/usr/bin/env -i` and passes only
-the minimum HostAgent environment (`CODEXPORT_*`, `PATH`, `HOME`, `USER`) so it
-does not inherit local credential variables from the user launch environment.
+The helper builds the signed HostAgent menu app, builds the signed WebRTC sidecar
+app, stops older CLI/menu HostAgent processes, and starts the app executable
+through a run-scoped LaunchAgent. The LaunchAgent uses `/usr/bin/env -i` and
+passes only the minimum HostAgent environment (`CODEXPORT_*`, `PATH`, `HOME`,
+`USER`) so it does not inherit local credential variables from the user launch
+environment.
 
 Expected output:
 
@@ -75,7 +80,8 @@ already-open Codex TUI session.
 
 ## HITL CLI Start Path
 
-Use this path before real TUI/iPhone HITL until a signed macOS app target exists:
+Use this CLI path for lower-level real TUI/iPhone HITL when the menu app is not
+needed:
 
 ```bash
 eval "$(zsh scripts/issue74-start-hostagent-p2p.sh "ISSUE74-PHYSICAL-IDLE-TUI-<timestamp>")"
@@ -100,14 +106,14 @@ For diagnosis, the equivalent manual start path is:
 
 ```bash
 swift build --product codexport-host-agent
-scripts/build-webrtc-sidecar.sh
+WEBRTC_SIDECAR_PATH="$(scripts/build-webrtc-sidecar.sh | tail -n 1)"
 
 CODEXPORT_RELAY_BASE_URL=https://codexport.smarteffi.net \
 CODEXPORT_RELAY_HOST_ID=11111111-2222-3333-4444-555555555555 \
 CODEXPORT_RELAY_HOST_NAME="CodexPort Dev Mac" \
 CODEXPORT_RELAY_HOST_USER="$USER" \
 CODEXPORT_CODEX_CONTROL_SOCKET_PATH="$HOME/.codex/app-server-control/app-server-control.sock" \
-CODEXPORT_WEBRTC_SIDECAR_PATH="$PWD/.scratch/webrtc-sidecar/codexport-webrtc-sidecar" \
+CODEXPORT_WEBRTC_SIDECAR_PATH="$WEBRTC_SIDECAR_PATH" \
 CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON='["--stdio-jsonl"]' \
 .build/debug/codexport-host-agent --p2p-listen
 ```
@@ -117,7 +123,7 @@ until SIGINT/SIGTERM. A TLS/poll failure against a placeholder Relay URL proves
 the listener loop is alive, but does not prove the production Relay/TURN path.
 
 `scripts/build-webrtc-sidecar.sh` builds the Mac Catalyst sidecar with the real
-`WebRTC.framework`, copies it to `.scratch/webrtc-sidecar`, rewrites the
-framework rpath to `@executable_path/PackageFrameworks`, and ad-hoc signs the
-helper for local HITL. A JSONL smoke with a deliberately invalid SDP should fail
-with a WebRTC SDP error, not `runtimeUnavailable` or a dyld framework error.
+`WebRTC.framework`, copies it to `.scratch/webrtc-sidecar/CodexPort WebRTC
+Sidecar.app`, rewrites the framework rpath to `@executable_path/../Frameworks`,
+and signs the helper bundle. A JSONL smoke with a deliberately invalid SDP should
+fail with a WebRTC SDP error, not `runtimeUnavailable` or a dyld framework error.

@@ -30,7 +30,8 @@ HOSTAGENT_STDERR="$ROOT_DIR/.scratch/logs/hostagent-p2p-launchd.err"
 HOSTAGENT_EXECUTABLE="${CODEXPORT_HOSTAGENT_EXECUTABLE:-$ROOT_DIR/.build/debug/codexport-host-agent}"
 HOSTAGENT_RUN_ID="${1:-${CODEXPORT_ISSUE74_RUN_ID:-issue74-hostagent-$(date +%Y%m%d%H%M%S)-$$}}"
 CODEX_CONTROL_SOCKET_PATH="${CODEXPORT_CODEX_CONTROL_SOCKET_PATH:-$HOME/.codex/app-server-control/app-server-control.sock}"
-WEBRTC_SIDECAR_PATH="${CODEXPORT_WEBRTC_SIDECAR_PATH:-$ROOT_DIR/.scratch/webrtc-sidecar/codexport-webrtc-sidecar}"
+WEBRTC_SIDECAR_DEFAULT_PATH="$ROOT_DIR/.scratch/webrtc-sidecar/CodexPort WebRTC Sidecar.app/Contents/MacOS/codexport-webrtc-sidecar"
+WEBRTC_SIDECAR_PATH="${CODEXPORT_WEBRTC_SIDECAR_PATH:-$WEBRTC_SIDECAR_DEFAULT_PATH}"
 WEBRTC_SIDECAR_ARGUMENTS_JSON="${CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON:-[\"--stdio-jsonl\"]}"
 
 if [[ ! -S "$CODEX_CONTROL_SOCKET_PATH" ]]; then
@@ -111,7 +112,7 @@ swift build --product codexport-host-agent >&2
 
 if [[ "${CODEXPORT_SKIP_WEBRTC_SIDECAR_BUILD:-0}" != "1" ]]; then
   echo "Building WebRTC sidecar..." >&2
-  scripts/build-webrtc-sidecar.sh >&2
+  WEBRTC_SIDECAR_PATH="$(scripts/build-webrtc-sidecar.sh | tail -n 1)"
 fi
 
 write_hostagent_launchagent_plist

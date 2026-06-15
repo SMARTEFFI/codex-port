@@ -156,9 +156,10 @@ Mac Catalyst WebRTC helper. The HostAgent sends `accept`, `remoteICE`, and
 `CODEXPORT_WEBRTC_SIDECAR_PATH` and `CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON`
 select this sidecar acceptor for both `codexport-host-agent --p2p-listen` and
 the menu app listener. `scripts/build-webrtc-sidecar.sh` builds
-`.scratch/webrtc-sidecar/codexport-webrtc-sidecar`, copies `WebRTC.framework`,
-rewrites the helper rpath to `@executable_path/PackageFrameworks`, and ad-hoc
-signs it for local HITL. Without the sidecar path, HostAgent keeps the existing
+`.scratch/webrtc-sidecar/CodexPort WebRTC Sidecar.app`, copies
+`WebRTC.framework`, rewrites the helper rpath to
+`@executable_path/../Frameworks`, and signs the helper bundle with a stable
+bundle identifier. Without the sidecar path, HostAgent keeps the existing
 platform SDK acceptor/unavailable guard.
 
 Production Relay smoke with a deliberately invalid SDP offer now proves the
@@ -179,10 +180,9 @@ passed 363 tests. Focused P2P/HostAgent sidecar/live regression passed 52 tests.
 `swift build --product codexport-host-agent-menu`, `swift build --product
 codexport-host-agent`, and `swift build --build-tests` passed. Xcode simulator
 build/install/launch also passed for `CodexPort.app` on iPhone 17, bundle id
-`com.smarteffi.codexport`, process `19297`. The temporary `.scratch/apps`
-HostAgent wrapper remains a packaging/signing convenience only; until a signed
-macOS app target exists, use the SwiftPM CLI product as the authoritative
-HostAgent start path for HITL.
+`com.smarteffi.codexport`, process `19297`. Later local-network packaging work
+made `.scratch/apps/CodexPort Host Agent.app` the stable signed menu start path
+for HostAgent P2P HITL.
 
 Update after production simulator P2P smoke on 2026-06-15:
 
@@ -490,7 +490,7 @@ Covered behavior:
 
 | Criteria | Status | Evidence |
 | --- | --- | --- |
-| Real iPhoneA connects to real Mac HostAgent through P2P direct or TURN-relayed DataChannel | Pending HITL | iOS/Catalyst WebRTC SDK dependency is pinned in `Package.swift` and `Package.resolved`. Native macOS HostAgent now delegates WebRTC to the Mac Catalyst sidecar at `.scratch/webrtc-sidecar/codexport-webrtc-sidecar`; JSONL smoke reaches real WebRTC runtime and fails only on deliberately invalid SDP. Real iPhone offer/answer remains pending. |
+| Real iPhoneA connects to real Mac HostAgent through P2P direct or TURN-relayed DataChannel | Pending HITL | iOS/Catalyst WebRTC SDK dependency is pinned in `Package.swift` and `Package.resolved`. Native macOS HostAgent now delegates WebRTC to the signed Mac Catalyst sidecar at `.scratch/webrtc-sidecar/CodexPort WebRTC Sidecar.app/Contents/MacOS/codexport-webrtc-sidecar`; JSONL smoke reaches real WebRTC runtime and fails only on deliberately invalid SDP. Real iPhone offer/answer remains pending. |
 | Real iPhoneB connects to same HostAgent session and sees iPhoneA live events | Pending HITL | AFK `ClientHostSessionDataChannelTests` covers two-device fan-out over DataChannel; `HostAgentP2PDataChannelEndpointTests` covers HostAgent DataChannel routing into the local relay service. No physical iPhoneB run was possible. |
 | Foreground recovery restores session list/detail without stale #61 online state | AFK pass, HITL pending | `ConnectionDiagnosticsTests` covers foreground, network change, HostAgent wake, stale replacement, failed recovery UI, and history retention. Real app foreground/background on physical iPhone remains pending. |
 | iOS shows write progress and intermediate events before final assistant response | AFK pass, HITL pending | `RelayJSONLSessionClientTests` covers `queued` -> `正在思考...`; `ClientHostSessionDataChannelTests` and `HostAgentP2PDataChannelEndpointTests` cover write status and assistant deltas over DataChannel before completion. Physical iPhone UI capture remains pending. |
@@ -530,8 +530,7 @@ Use this checklist when two physical iPhones are online.
    On native macOS HostAgent, build and set the WebRTC sidecar helper:
 
    ```sh
-   scripts/build-webrtc-sidecar.sh
-   CODEXPORT_WEBRTC_SIDECAR_PATH="$PWD/.scratch/webrtc-sidecar/codexport-webrtc-sidecar"
+   CODEXPORT_WEBRTC_SIDECAR_PATH="$(scripts/build-webrtc-sidecar.sh | tail -n 1)"
    CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON='["--stdio-jsonl"]'
    ```
 
@@ -539,9 +538,7 @@ Use this checklist when two physical iPhones are online.
    app-server control socket. Do not use `codex-exec-json` for this gate because
    it only proves persisted history / one-shot JSONL behavior.
 
-   Until a signed HostAgent macOS app target exists, prefer the SwiftPM CLI
-   product for HITL. The repeatable run-id-scoped helper is the preferred start
-   path for #74:
+   The repeatable run-id-scoped helper is the preferred CLI start path for #74:
 
    ```sh
    eval "$(zsh scripts/issue74-start-hostagent-p2p.sh "ISSUE74-PHYSICAL-IDLE-TUI-<timestamp>")"
@@ -555,13 +552,14 @@ Use this checklist when two physical iPhones are online.
 
    ```sh
    swift build --product codexport-host-agent
+   CODEXPORT_WEBRTC_SIDECAR_PATH="$(scripts/build-webrtc-sidecar.sh | tail -n 1)"
 
    CODEXPORT_RELAY_BASE_URL=https://codexport.smarteffi.net \
    CODEXPORT_RELAY_HOST_ID=11111111-2222-3333-4444-555555555555 \
    CODEXPORT_RELAY_HOST_NAME="CodexPort Dev Mac" \
    CODEXPORT_RELAY_HOST_USER="$USER" \
    CODEXPORT_CODEX_CONTROL_SOCKET_PATH="$HOME/.codex/app-server-control/app-server-control.sock" \
-   CODEXPORT_WEBRTC_SIDECAR_PATH="$PWD/.scratch/webrtc-sidecar/codexport-webrtc-sidecar" \
+   CODEXPORT_WEBRTC_SIDECAR_PATH="$CODEXPORT_WEBRTC_SIDECAR_PATH" \
    CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON='["--stdio-jsonl"]' \
    .build/debug/codexport-host-agent --p2p-listen
    ```
