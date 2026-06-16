@@ -529,6 +529,46 @@ import Testing
     )))
 }
 
+@Test func sessionStoreMapsHistoryMarkdownImagesToStructuredUserMessageAttachments() async throws {
+    let protocolClient = FakeCodexProtocol()
+    let store = SessionStore(protocolClient: protocolClient)
+    store.openNew(threadID: "thread-1")
+    let imagePath = "~/.codex-port/attachments/thread-1/1700000000/photo-1.jpg"
+
+    store.receive(relayHistoryPage: RelayThreadHistoryPage(
+        requestID: "initial",
+        threadID: "thread-1",
+        items: [
+            .userMessage("请看这张图\n![photo](\(imagePath))")
+        ],
+        status: .completed,
+        nextCursor: nil
+    ))
+
+    let expected = StructuredUserMessage(
+        body: "请看这张图",
+        attachments: [
+            MessageAttachment(
+                id: "markdown-image-0",
+                kind: .image(contentType: "image/jpeg", detail: nil),
+                displayName: "photo-1.jpg",
+                source: .remoteHostPath(imagePath)
+            )
+        ]
+    )
+    #expect(store.visibleItems == [.structuredUserMessage(expected)])
+
+    let rows = TranscriptPresentation.rows(for: store.visibleItems)
+    #expect(rows.first?.body == "请看这张图")
+    #expect(rows.first?.imageAttachments == [
+        ImageAttachmentGalleryItem(
+            id: "markdown-image-0",
+            displayName: "photo-1.jpg",
+            availability: .remote(path: imagePath)
+        )
+    ])
+}
+
 @Test func sessionStoreMergesStreamedEventsAndInterruptsRunningTurn() async throws {
     let protocolClient = FakeCodexProtocol()
     let store = SessionStore(protocolClient: protocolClient)

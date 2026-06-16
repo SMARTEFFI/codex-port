@@ -280,6 +280,8 @@ import Testing
 @Test func appServerControlSocketLiveProducerIncludesLocalImageAttachmentsInTurnStartInput() async throws {
     let transport = RecordingCodexAppServerControlTransport()
     let producer = CodexAppServerControlSocketLiveProducer(transport: transport)
+    let imagePath = "~/.codex-port/attachments/thread-1/123/photo.png"
+    let expandedImagePath = (imagePath as NSString).expandingTildeInPath
 
     try await producer.start(session: CodexCLILiveSessionDescriptor(
         sessionID: "session-1",
@@ -291,7 +293,7 @@ import Testing
             writeID: "write-photo",
             threadID: "thread-1",
             text: "看这张图",
-            attachments: [.localImage(path: "~/.codex-port/attachments/thread-1/123/photo.png", detail: "high")]
+            attachments: [.localImage(path: imagePath, detail: "high")]
         ))
     }
     await transport.waitForRequest(method: "turn/start")
@@ -302,7 +304,7 @@ import Testing
     #expect(input.first?.object?["type"]?.string == "text")
     #expect(input.first?.object?["text"]?.string == "看这张图")
     #expect(input[safe: 1]?.object?["type"]?.string == "localImage")
-    #expect(input[safe: 1]?.object?["path"]?.string == "~/.codex-port/attachments/thread-1/123/photo.png")
+    #expect(input[safe: 1]?.object?["path"]?.string == expandedImagePath)
     #expect(input[safe: 1]?.object?["detail"]?.string == "high")
     #expect(await promptTask.value == .accepted)
 }

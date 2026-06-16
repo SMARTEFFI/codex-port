@@ -326,7 +326,7 @@ public final class SessionStore {
             usesServerPagedHistory = false
             itemIndexByID.removeAll()
         case let .userMessage(turnID, itemID, text):
-            receive(.itemCompleted(turnID: turnID, itemID: itemID, item: .userMessage(text)))
+            receive(.itemCompleted(turnID: turnID, itemID: itemID, item: .userMessageFromCompatibilityText(text)))
         case let .assistantTextDelta(turnID, itemID, text):
             receive(.agentMessageDelta(turnID: turnID, itemID: itemID, delta: text))
         case let .commandOutputDelta(turnID, itemID, text):
@@ -672,7 +672,7 @@ extension VisibleItem {
     init(relayHistoryItem item: RelayThreadHistoryItem) {
         switch item {
         case let .userMessage(text):
-            self = .userMessage(text)
+            self = .userMessageFromCompatibilityText(text)
         case let .assistantMessage(text):
             self = .assistantMessage(text)
         case let .commandOutput(text):
@@ -694,7 +694,7 @@ extension VisibleItem {
         switch type {
         case "userMessage", "user_message", "userInput":
             guard let text else { return nil }
-            self = .userMessage(text)
+            self = .userMessageFromCompatibilityText(text)
         case "assistantMessage", "assistant_message", "agentMessage", "message", "plan", "reasoning":
             guard let text else { return nil }
             self = .assistantMessage(text)
@@ -736,6 +736,17 @@ extension VisibleItem {
         default:
             return object["text"]?.string
         }
+    }
+
+    fileprivate static func userMessageFromCompatibilityText(_ text: String) -> VisibleItem {
+        let attachments = MarkdownImageCompatibilityParser.attachmentCandidates(fromUserMarkdown: text)
+        guard !attachments.isEmpty else {
+            return .userMessage(text)
+        }
+        return .structuredUserMessage(StructuredUserMessage(
+            body: MarkdownImageCompatibilityParser.displayTextWithoutImageMarkdown(text),
+            attachments: attachments
+        ))
     }
 
     fileprivate static func fileChangeDetails(_ json: JSONValue) -> (path: String, diff: String)? {

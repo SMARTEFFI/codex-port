@@ -76,6 +76,14 @@ import Testing
     #expect(reader.requestedPaths == ["/Users/chenm/Desktop/screen.png"])
 }
 
+@Test func markdownCompatibilityRemovesUserImageMarkdownFromDisplayText() {
+    let displayText = MarkdownImageCompatibilityParser.displayTextWithoutImageMarkdown(
+        "我会看这张图\n![photo](~/.codex-port/attachments/thread/123/photo-1.jpg)\n继续"
+    )
+
+    #expect(displayText == "我会看这张图\n继续")
+}
+
 private func remoteImage(path: String, contentType: String = "image/png") -> MessageAttachment {
     MessageAttachment(
         id: path,

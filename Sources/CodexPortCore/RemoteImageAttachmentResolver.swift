@@ -93,6 +93,26 @@ public enum MarkdownImageCompatibilityParser {
         []
     }
 
+    public static func displayTextWithoutImageMarkdown(_ markdown: String) -> String {
+        var display = ""
+        var index = markdown.startIndex
+        while let openRange = markdown[index...].range(of: "![") {
+            guard let markerRange = markdown[openRange.upperBound...].range(of: "]("),
+                  let closeIndex = markdown[markerRange.upperBound...].firstIndex(of: ")")
+            else {
+                break
+            }
+            display.append(contentsOf: markdown[index..<openRange.lowerBound])
+            index = markdown.index(after: closeIndex)
+        }
+        display.append(contentsOf: markdown[index...])
+        return display
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
     private static func imageTargets(in markdown: String) -> [String] {
         var targets: [String] = []
         var index = markdown.startIndex

@@ -181,7 +181,7 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
             case let .localImage(path, detail):
                 var image: [String: ControlJSONValue] = [
                     "type": .string("localImage"),
-                    "path": .string(path),
+                    "path": .string(localHostPath(path)),
                 ]
                 if let detail {
                     image["detail"] = .string(detail)
@@ -192,6 +192,10 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
             }
         }
         return items
+    }
+
+    private static func localHostPath(_ path: String) -> String {
+        (path as NSString).expandingTildeInPath
     }
 
     private static func textInput(_ text: String) -> ControlJSONValue {

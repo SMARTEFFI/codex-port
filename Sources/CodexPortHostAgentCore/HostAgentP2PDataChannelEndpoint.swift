@@ -96,7 +96,9 @@ public final class HostAgentP2PDataChannelEndpoint: @unchecked Sendable {
 
     private func send(_ line: String) async throws {
         guard !lock.withLock({ isStopped }) else { return }
-        try await dataChannel.send(Data((line + "\n").utf8))
+        for frame in WebRTCDataChannelJSONLFraming.frames(forLine: line) {
+            try await dataChannel.send(frame)
+        }
     }
 
     private func sendError(_ error: Error) async {

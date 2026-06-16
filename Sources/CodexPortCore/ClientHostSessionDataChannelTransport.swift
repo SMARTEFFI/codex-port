@@ -30,7 +30,9 @@ public final class ClientHostSessionDataChannelTransport: RelayJSONLTransport, @
     }
 
     public func sendLine(_ line: String) async throws {
-        try await dataChannel.send(Data((line + "\n").utf8))
+        for frame in WebRTCDataChannelJSONLFraming.frames(forLine: line) {
+            try await dataChannel.send(frame)
+        }
     }
 
     private func receive(_ message: Data) {

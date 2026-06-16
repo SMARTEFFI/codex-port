@@ -251,6 +251,97 @@ import Testing
     #expect(await context.service.plaintextInspectionLog().isEmpty)
 }
 
+@Test func clientHostSessionProtocolUploadsLargeAttachmentOverSplitDataChannelFrames() async throws {
+    let context = try await ClientHostSessionP2PTestContext.make()
+    let pair = P2PWebRTCDataChannelTransportPair(
+        signalingService: context.service,
+        session: context.session
+    )
+    try await pair.open()
+    let clientTransport = ClientHostSessionDataChannelTransport(dataChannel: pair.client)
+    let hostTransport = ClientHostSessionDataChannelTransport(dataChannel: pair.host)
+    let hostTask = Task {
+        for await line in hostTransport.incomingLines {
+            guard let command = try? HostAgentLocalRelayJSONLCodec.decodeCommand(from: line) else {
+                continue
+            }
+            switch command {
+            case let .createDirectory(clientID, requestID, path, _):
+                try await pair.host.send(Data((try RelayEndpointJSONLCodec.encodeFileOperationResult(
+                    operation: "createDirectory",
+                    requestID: requestID,
+                    path: path,
+                    clientID: clientID
+                ) + "\n").utf8))
+            case let .writeFile(clientID, requestID, path, dataBase64):
+                #expect(Data(base64Encoded: dataBase64)?.count == 80_000)
+                try await pair.host.send(Data((try RelayEndpointJSONLCodec.encodeFileOperationResult(
+                    operation: "writeFile",
+                    requestID: requestID,
+                    path: path,
+                    clientID: clientID
+                ) + "\n").utf8))
+            case let .submit(clientID, sessionID, write):
+                guard case let .prompt(writeID, _, _, attachments) = write else {
+                    continue
+                }
+                #expect(attachments.count == 1)
+                try await pair.host.send(Data((try RelayEndpointJSONLCodec.encodeWriteStatus(
+                    .queued,
+                    clientID: clientID,
+                    sessionID: sessionID,
+                    writeID: writeID
+                ) + "\n").utf8))
+                return
+            case .listThreads, .loadHistory, .readFile, .attach, .detach, .stop:
+                continue
+            }
+        }
+    }
+    let store = SessionStore(protocolClient: RelaySessionPlaceholderProtocolClient(threadID: "thread-1"))
+    let client = ClientHostSessionClient(
+        clientID: "iphone-a",
+        sessionID: "session-1",
+        threadID: "thread-1",
+        turnID: "turn-1",
+        transport: clientTransport,
+        sessionStore: store
+    )
+    var composer = InputComposer(modelDisplay: "5.5")
+    composer.text = "large attachment"
+    let pendingImage = PendingAttachment(
+        name: "large-photo.jpg",
+        kind: .image(detail: "high"),
+        data: Data(repeating: 0xAB, count: 80_000),
+        localCachePath: "/tmp/large-photo.jpg"
+    )
+
+    try await client.attach()
+    let status = try await client.send(
+        composer: composer,
+        pendingAttachments: [pendingImage],
+        remoteRoot: "~/.codex-port/attachments",
+        writeID: "write-large-photo",
+        timeout: .seconds(2)
+    )
+
+    hostTask.cancel()
+    #expect(status == .queued)
+    #expect(store.visibleItems == [
+        .structuredUserMessage(StructuredUserMessage(
+            body: "large attachment",
+            attachments: [
+                MessageAttachment(
+                    id: "large-photo.jpg",
+                    kind: .image(contentType: nil, detail: "high"),
+                    displayName: "large-photo.jpg",
+                    source: .localCache(path: "/tmp/large-photo.jpg")
+                ),
+            ]
+        )),
+    ])
+}
+
 @Test func clientHostSessionProtocolSurfacesActionableFailedWriteReasonOverDataChannel() async throws {
     let context = try await ClientHostSessionP2PTestContext.make()
     let pair = P2PWebRTCDataChannelTransportPair(

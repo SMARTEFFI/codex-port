@@ -40,6 +40,23 @@ public final class ClientHostSessionClient: @unchecked Sendable {
         try await client.sendPrompt(text, writeID: writeID)
     }
 
+    @discardableResult
+    public func send(
+        composer: InputComposer,
+        pendingAttachments: [PendingAttachment],
+        remoteRoot: String = "~/.codex-port/attachments",
+        writeID: String = UUID().uuidString,
+        timeout: Duration = .seconds(10)
+    ) async throws -> RelayWriteStatus {
+        try await client.send(
+            composer: composer,
+            pendingAttachments: pendingAttachments,
+            remoteRoot: remoteRoot,
+            writeID: writeID,
+            timeout: timeout
+        )
+    }
+
     public func interrupt(writeID: String = UUID().uuidString) async throws {
         try await client.interrupt(writeID: writeID)
     }

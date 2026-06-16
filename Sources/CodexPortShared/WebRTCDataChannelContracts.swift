@@ -34,3 +34,24 @@ public protocol WebRTCDataChannelTransport: Sendable {
 
     func send(_ message: Data) async throws
 }
+
+public enum WebRTCDataChannelJSONLFraming {
+    public static let maximumFrameBytes = 16 * 1024
+
+    public static func frames(forLine line: String, maximumFrameBytes: Int = Self.maximumFrameBytes) -> [Data] {
+        let data = Data((line + "\n").utf8)
+        let cappedFrameBytes = max(1, maximumFrameBytes)
+        guard data.count > cappedFrameBytes else {
+            return [data]
+        }
+
+        var frames: [Data] = []
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + cappedFrameBytes, data.count)
+            frames.append(data.subdata(in: offset..<end))
+            offset = end
+        }
+        return frames
+    }
+}

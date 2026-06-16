@@ -247,6 +247,63 @@ import Testing
     ])
 }
 
+@Test func relayJSONLSessionClientChunksLargePendingImageUploadLines() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let client = RelayJSONLSessionClient(
+        clientID: "iphone-a",
+        sessionID: "session-1",
+        threadID: "thread-1",
+        turnID: "turn-1",
+        transport: transport,
+        sessionStore: store
+    )
+    var composer = InputComposer(modelDisplay: "5.5")
+    composer.text = "看这张大图"
+    let pendingImage = PendingAttachment(
+        name: "large-photo.jpg",
+        kind: .image(detail: "high"),
+        data: Data(repeating: 0xAB, count: 80_000),
+        localCachePath: "/tmp/large-photo.jpg"
+    )
+
+    try await client.attach()
+    async let status = client.send(
+        composer: composer,
+        pendingAttachments: [pendingImage],
+        remoteRoot: "~/.codex-port/attachments",
+        writeID: "write-large-photo",
+        timeout: .milliseconds(800)
+    )
+    let createDirectory = try #require(jsonObject(from: try await transport.waitForSentLine(containing: #""type":"createDirectory""#)))
+    try transport.emit(RelayEndpointJSONLCodec.encodeFileOperationResult(
+        operation: "createDirectory",
+        requestID: try #require(createDirectory["requestID"] as? String),
+        path: try #require(createDirectory["path"] as? String),
+        clientID: "iphone-a"
+    ))
+    let writeFile = try #require(jsonObject(from: try await transport.waitForSentLine(containing: #""type":"writeFile""#)))
+    try transport.emit(RelayEndpointJSONLCodec.encodeFileOperationResult(
+        operation: "writeFile",
+        requestID: try #require(writeFile["requestID"] as? String),
+        path: try #require(writeFile["path"] as? String),
+        clientID: "iphone-a"
+    ))
+    _ = try await transport.waitForSentLine(containing: #""writeID":"write-large-photo""#)
+    try transport.emit(RelayEndpointJSONLCodec.encodeWriteStatus(
+        .queued,
+        clientID: "iphone-a",
+        sessionID: "session-1",
+        writeID: "write-large-photo"
+    ))
+
+    #expect(try await status == .queued)
+    #expect(await transport.sentPayloadFramesSnapshot().allSatisfy {
+        $0.count <= WebRTCDataChannelJSONLFraming.maximumFrameBytes
+    })
+    #expect(await transport.sentLinesSnapshot().contains { $0.utf8.count > WebRTCDataChannelJSONLFraming.maximumFrameBytes })
+}
+
 @Test func relayJSONLSessionClientShowsThinkingRowAfterPromptWriteQueued() async throws {
     let transport = RecordingRelayJSONLTransport()
     let store = SessionStore(protocolClient: FakeCodexProtocol())
@@ -759,6 +816,7 @@ private func threadSnapshot(_ index: Int) -> RelayThreadSummarySnapshot {
 private final class RecordingRelayJSONLTransport: RelayJSONLTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var sentLines: [String] = []
+    private var sentPayloadFrames: [Data] = []
     private var nextSendError: Error?
     private var continuation: AsyncStream<String>.Continuation?
     let incomingLines: AsyncStream<String>
@@ -781,8 +839,10 @@ private final class RecordingRelayJSONLTransport: RelayJSONLTransport, @unchecke
         if let error {
             throw error
         }
+        let frames = WebRTCDataChannelJSONLFraming.frames(forLine: line)
         lock.withLock {
             sentLines.append(line)
+            sentPayloadFrames.append(contentsOf: frames)
         }
     }
 
@@ -801,6 +861,12 @@ private final class RecordingRelayJSONLTransport: RelayJSONLTransport, @unchecke
     func sentLinesSnapshot() async -> [String] {
         lock.withLock {
             sentLines
+        }
+    }
+
+    func sentPayloadFramesSnapshot() async -> [Data] {
+        lock.withLock {
+            sentPayloadFrames
         }
     }
 
