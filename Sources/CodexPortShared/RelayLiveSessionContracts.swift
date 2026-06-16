@@ -45,6 +45,11 @@ public enum RelayLiveSessionEvent: Equatable, Sendable {
     }
 }
 
+public enum TurnAttachment: Equatable, Sendable {
+    case localImage(path: String, detail: String?)
+    case remoteFile(path: String)
+}
+
 public enum RelayThreadRunStatus: String, Codable, Equatable, Sendable {
     case running
     case interrupting
@@ -129,13 +134,13 @@ public enum RelayApprovalAction: Equatable, Sendable {
 }
 
 public enum RelayLiveSessionWrite: Equatable, Sendable {
-    case prompt(writeID: String, threadID: String, text: String)
+    case prompt(writeID: String, threadID: String, text: String, attachments: [TurnAttachment] = [])
     case interrupt(writeID: String, threadID: String, turnID: String)
     case approval(writeID: String, requestID: String, action: RelayApprovalAction)
 
     public var writeID: String {
         switch self {
-        case let .prompt(writeID, _, _), let .interrupt(writeID, _, _), let .approval(writeID, _, _):
+        case let .prompt(writeID, _, _, _), let .interrupt(writeID, _, _), let .approval(writeID, _, _):
             writeID
         }
     }

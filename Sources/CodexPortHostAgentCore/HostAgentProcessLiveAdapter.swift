@@ -180,7 +180,7 @@ public final class HostAgentProcessLiveAdapter: HostAgentLiveSessionAdapter, @un
         }
 
         switch write {
-        case let .prompt(writeID, _, text):
+        case let .prompt(writeID, _, text, _):
             logger.record("codex write prompt write=\(writeID) bytes=\(text.utf8.count)")
             return writeLine(text, to: handle)
         case let .approval(writeID, requestID, action):

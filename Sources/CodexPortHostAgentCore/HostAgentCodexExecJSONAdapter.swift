@@ -270,7 +270,7 @@ public final class HostAgentCodexExecJSONAdapter: HostAgentLiveSessionAdapter, @
         }
 
         switch write {
-        case let .prompt(writeID, _, text):
+        case let .prompt(writeID, _, text, _):
             logger.record("codex exec prompt write=\(writeID) bytes=\(text.utf8.count)")
             return await runPrompt(text, writeID: writeID)
         case let .approval(writeID, requestID, action):

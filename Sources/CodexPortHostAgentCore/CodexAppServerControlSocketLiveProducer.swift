@@ -92,7 +92,11 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
             }
             _ = try await transport.request(
                 method: "turn/start",
-                params: Self.turnStartParams(threadID: prompt.threadID, text: prompt.text)
+                params: Self.turnStartParams(
+                    threadID: prompt.threadID,
+                    text: prompt.text,
+                    attachments: prompt.attachments
+                )
             )
             return .accepted
         } catch let error as CodexAppServerControlProducerError {
@@ -160,16 +164,41 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
         ])
     }
 
-    private static func turnStartParams(threadID: String, text: String) -> ControlJSONValue {
+    private static func turnStartParams(threadID: String, text: String, attachments: [TurnAttachment]) -> ControlJSONValue {
         .object([
             "threadId": .string(threadID),
-            "input": .array([
-                .object([
-                    "type": .string("text"),
-                    "text": .string(text),
-                    "text_elements": .array([]),
-                ]),
-            ]),
+            "input": .array(inputItems(text: text, attachments: attachments)),
+        ])
+    }
+
+    private static func inputItems(text: String, attachments: [TurnAttachment]) -> [ControlJSONValue] {
+        var items: [ControlJSONValue] = []
+        if !text.isEmpty {
+            items.append(textInput(text))
+        }
+        for attachment in attachments {
+            switch attachment {
+            case let .localImage(path, detail):
+                var image: [String: ControlJSONValue] = [
+                    "type": .string("localImage"),
+                    "path": .string(path),
+                ]
+                if let detail {
+                    image["detail"] = .string(detail)
+                }
+                items.append(.object(image))
+            case let .remoteFile(path):
+                items.append(textInput("Uploaded file: \(path)"))
+            }
+        }
+        return items
+    }
+
+    private static func textInput(_ text: String) -> ControlJSONValue {
+        .object([
+            "type": .string("text"),
+            "text": .string(text),
+            "text_elements": .array([]),
         ])
     }
 

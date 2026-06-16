@@ -3,21 +3,25 @@ import CodexPortShared
 
 public protocol HostAgentRemoteFileProviding: Sendable {
     func readFile(path: String, maxBytes: Int, requestID: String) async throws -> RelayRemoteFileContent
+    func createDirectory(path: String, recursive: Bool) async throws
+    func writeFile(path: String, dataBase64: String) async throws
 }
 
 public enum HostAgentRemoteFileProviderError: Error, Equatable, Sendable {
     case notFile(String)
     case oversized(path: String, maxBytes: Int)
     case unreadable(String)
+    case invalidBase64(String)
 }
 
 public struct HostAgentRemoteFileProvider: HostAgentRemoteFileProviding {
     public init() {}
 
     public func readFile(path: String, maxBytes: Int, requestID: String) async throws -> RelayRemoteFileContent {
-        let url = URL(fileURLWithPath: path)
+        let url = Self.fileURL(forPath: path)
+        let resolvedPath = url.path
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+        guard FileManager.default.fileExists(atPath: resolvedPath, isDirectory: &isDirectory), !isDirectory.boolValue else {
             throw HostAgentRemoteFileProviderError.notFile(path)
         }
         let cappedBytes = max(1, maxBytes)
@@ -36,6 +40,25 @@ public struct HostAgentRemoteFileProvider: HostAgentRemoteFileProviding {
             byteCount: data.count,
             dataBase64: data.base64EncodedString()
         )
+    }
+
+    public func createDirectory(path: String, recursive: Bool) async throws {
+        try FileManager.default.createDirectory(
+            at: Self.fileURL(forPath: path),
+            withIntermediateDirectories: recursive
+        )
+    }
+
+    public func writeFile(path: String, dataBase64: String) async throws {
+        guard let data = Data(base64Encoded: dataBase64) else {
+            throw HostAgentRemoteFileProviderError.invalidBase64(path)
+        }
+        let url = Self.fileURL(forPath: path)
+        try data.write(to: url, options: [.atomic])
+    }
+
+    private static func fileURL(forPath path: String) -> URL {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
     }
 
     private static func contentType(forPath path: String) -> String? {

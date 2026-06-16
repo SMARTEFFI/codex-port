@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public enum RemoteFileKind: Equatable, Sendable {
     case file
@@ -79,7 +80,12 @@ extension RemoteFileKind {
     }
 }
 
-public protocol CodexProtocolClient: AnyObject, Sendable {
+public protocol RemoteFileWriting: AnyObject, Sendable {
+    func createDirectory(path: String, recursive: Bool) async throws
+    func writeFile(path: String, dataBase64: String) async throws
+}
+
+public protocol CodexProtocolClient: RemoteFileWriting {
     func readThread(id: String, includeTurns: Bool) async throws -> JSONValue
     func resumeThread(id: String) async throws -> JSONValue
     func resumeThread(id: String, initialTurnLimit: Int) async throws -> JSONValue
@@ -93,8 +99,6 @@ public protocol CodexProtocolClient: AnyObject, Sendable {
     func unsubscribeThread(id: String) async throws -> JSONValue
     func readDirectory(path: String) async throws -> [RemoteDirectoryEntry]
     func getMetadata(path: String) async throws -> RemoteMetadata
-    func createDirectory(path: String, recursive: Bool) async throws
-    func writeFile(path: String, dataBase64: String) async throws
 }
 
 public extension CodexProtocolClient {
@@ -243,11 +247,11 @@ public enum PendingAttachmentKind: Equatable, Sendable {
 }
 
 public final class AttachmentUploader {
-    private let protocolClient: CodexProtocolClient
+    private let protocolClient: RemoteFileWriting
     private let remoteRoot: String
     private let clock: () -> Date
 
-    public init(protocolClient: CodexProtocolClient, remoteRoot: String, clock: @escaping () -> Date = Date.init) {
+    public init(protocolClient: RemoteFileWriting, remoteRoot: String, clock: @escaping () -> Date = Date.init) {
         self.protocolClient = protocolClient
         self.remoteRoot = remoteRoot
         self.clock = clock

@@ -68,6 +68,39 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    public func send(
+        composer: InputComposer,
+        pendingAttachments: [PendingAttachment],
+        remoteRoot: String = "~/.codex-port/attachments",
+        writeID: String = UUID().uuidString,
+        timeout: Duration = .seconds(10)
+    ) async throws -> RelayWriteStatus {
+        let client = try await attach()
+        do {
+            return try await client.send(
+                composer: composer,
+                pendingAttachments: pendingAttachments,
+                remoteRoot: remoteRoot,
+                writeID: writeID,
+                timeout: timeout
+            )
+        } catch {
+            guard Self.shouldRecreateClient(after: error) else {
+                throw error
+            }
+            discardCurrentClient(client)
+            let replacement = try await makeAttachedClient()
+            return try await replacement.send(
+                composer: composer,
+                pendingAttachments: pendingAttachments,
+                remoteRoot: remoteRoot,
+                writeID: writeID,
+                timeout: timeout
+            )
+        }
+    }
+
     public func interrupt(writeID: String = UUID().uuidString) async throws {
         let client = try await attach()
         do {

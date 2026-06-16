@@ -310,8 +310,9 @@ struct SessionDetailView: View {
             Task {
                 do {
                     if let relaySessionClientManager {
-                        _ = try await relaySessionClientManager.sendPromptAndWaitForAcceptance(
-                            composer.message.protocolPrompt,
+                        _ = try await relaySessionClientManager.send(
+                            composer: composer,
+                            pendingAttachments: pendingAttachments,
                             timeout: .seconds(12)
                         )
                         updateTimeline(sessionStore.visibleItems, source: .liveUpdate)

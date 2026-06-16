@@ -5,6 +5,8 @@ public enum HostAgentLocalRelayJSONLCommand: Equatable, Sendable {
     case listThreads(clientID: String, requestID: String, limit: Int, cursor: String?)
     case loadHistory(clientID: String, requestID: String, threadID: String, limit: Int, cursor: String?)
     case readFile(clientID: String, requestID: String, path: String, maxBytes: Int)
+    case createDirectory(clientID: String, requestID: String, path: String, recursive: Bool)
+    case writeFile(clientID: String, requestID: String, path: String, dataBase64: String)
     case attach(clientID: String, request: HostAgentLocalRelayAttachRequest)
     case submit(clientID: String, sessionID: String, write: RelayLiveSessionWrite)
     case detach(clientID: String, sessionID: String)
@@ -48,6 +50,20 @@ public enum HostAgentLocalRelayJSONLCodec {
                 path: try string("path", in: object),
                 maxBytes: int("maxBytes", in: object) ?? 5_000_000
             )
+        case "createDirectory":
+            return .createDirectory(
+                clientID: try string("clientID", in: object),
+                requestID: try string("requestID", in: object),
+                path: try string("path", in: object),
+                recursive: bool("recursive", in: object) ?? true
+            )
+        case "writeFile":
+            return .writeFile(
+                clientID: try string("clientID", in: object),
+                requestID: try string("requestID", in: object),
+                path: try string("path", in: object),
+                dataBase64: try string("dataBase64", in: object)
+            )
         case "attach":
             return .attach(
                 clientID: try string("clientID", in: object),
@@ -66,7 +82,8 @@ public enum HostAgentLocalRelayJSONLCodec {
                 write: .prompt(
                     writeID: try string("writeID", in: object),
                     threadID: threadID,
-                    text: try string("text", in: object)
+                    text: try string("text", in: object),
+                    attachments: try attachments(from: object)
                 )
             )
         case "interrupt":
@@ -133,6 +150,20 @@ public enum HostAgentLocalRelayJSONLCodec {
         try RelayEndpointJSONLCodec.encodeThreadHistoryPage(page, clientID: clientID)
     }
 
+    public static func encodeFileOperationResult(
+        operation: String,
+        requestID: String,
+        path: String,
+        clientID: String
+    ) throws -> String {
+        try RelayEndpointJSONLCodec.encodeFileOperationResult(
+            operation: operation,
+            requestID: requestID,
+            path: path,
+            clientID: clientID
+        )
+    }
+
     public static func encodeError(_ reason: String, clientID: String? = nil) throws -> String {
         var object: [String: Any] = [
             "type": "error",
@@ -191,6 +222,39 @@ public enum HostAgentLocalRelayJSONLCodec {
         return nil
     }
 
+    private static func bool(_ key: String, in object: [String: Any]) -> Bool? {
+        if let value = object[key] as? Bool {
+            return value
+        }
+        if let value = object[key] as? String {
+            switch value.lowercased() {
+            case "true", "1", "yes":
+                return true
+            case "false", "0", "no":
+                return false
+            default:
+                return nil
+            }
+        }
+        return nil
+    }
+
+    private static func attachments(from object: [String: Any]) throws -> [TurnAttachment] {
+        guard let attachmentObjects = object["attachments"] as? [[String: Any]] else {
+            return []
+        }
+        return try attachmentObjects.map { attachmentObject in
+            switch try string("type", in: attachmentObject) {
+            case "localImage":
+                return .localImage(path: try string("path", in: attachmentObject), detail: attachmentObject["detail"] as? String)
+            case "remoteFile":
+                return .remoteFile(path: try string("path", in: attachmentObject))
+            default:
+                throw HostAgentLocalRelayJSONLCodecError.unsupportedType(try string("type", in: attachmentObject))
+            }
+        }
+    }
+
     private static func approvalAction(_ value: String) throws -> RelayApprovalAction {
         switch value {
         case "accept":
@@ -216,6 +280,10 @@ public extension HostAgentLocalRelayJSONLCommand {
             HostAgentLocalRelayCommandDiagnosticSummary(type: "loadHistory", clientID: clientID, threadID: threadID, inputBytes: inputBytes)
         case let .readFile(clientID, _, _, _):
             HostAgentLocalRelayCommandDiagnosticSummary(type: "readFile", clientID: clientID, inputBytes: inputBytes)
+        case let .createDirectory(clientID, _, _, _):
+            HostAgentLocalRelayCommandDiagnosticSummary(type: "createDirectory", clientID: clientID, inputBytes: inputBytes)
+        case let .writeFile(clientID, _, _, _):
+            HostAgentLocalRelayCommandDiagnosticSummary(type: "writeFile", clientID: clientID, inputBytes: inputBytes)
         case let .attach(clientID, request):
             HostAgentLocalRelayCommandDiagnosticSummary(
                 type: "attach",
@@ -255,7 +323,7 @@ private extension RelayLiveSessionWrite {
 
     var diagnosticThreadID: String? {
         switch self {
-        case let .prompt(_, threadID, _), let .interrupt(_, threadID, _):
+        case let .prompt(_, threadID, _, _), let .interrupt(_, threadID, _):
             threadID
         case .approval:
             nil

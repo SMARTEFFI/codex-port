@@ -171,6 +171,31 @@ import Testing
     ])
 }
 
+@Test func hostAgentLocalRelayServiceWritesUploadedAttachmentBytes() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codexport-host-agent-upload-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let fileURL = directory.appendingPathComponent("photo.png")
+    let data = Data([0x89, 0x50, 0x4E, 0x47])
+    let service = HostAgentLocalRelayService(
+        commandFactory: { _ in HostAgentProcessCommand(executablePath: "/bin/false") }
+    )
+
+    let output = try await service.runScriptedSession(inputLines: [
+        #"{"type":"createDirectory","clientID":"iphone-a","requestID":"mkdir-1","path":"\#(directory.path)","recursive":true}"#,
+        #"{"type":"writeFile","clientID":"iphone-a","requestID":"write-1","path":"\#(fileURL.path)","dataBase64":"\#(data.base64EncodedString())"}"#,
+    ])
+    let decoded = try output.map(RelayEndpointJSONLCodec.decodeLine)
+
+    #expect(try Data(contentsOf: fileURL) == data)
+    #expect(decoded == [
+        .fileOperationResult(clientID: "iphone-a", operation: "createDirectory", requestID: "mkdir-1", path: directory.path),
+        .fileOperationResult(clientID: "iphone-a", operation: "writeFile", requestID: "write-1", path: fileURL.path),
+    ])
+}
+
 @Test func hostAgentLocalRelayServiceDoesNotBlockAttachWhenHistoryProviderHangs() async throws {
     let service = HostAgentLocalRelayService(
         commandFactory: { _ in

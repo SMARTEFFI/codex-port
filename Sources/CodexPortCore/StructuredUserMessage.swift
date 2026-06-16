@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public struct StructuredUserMessage: Equatable, Sendable {
     public var body: String

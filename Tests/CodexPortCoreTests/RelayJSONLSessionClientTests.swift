@@ -167,6 +167,86 @@ import Testing
     #expect(store.visibleItems == [.userMessage("hello accepted relay")])
 }
 
+@Test func relayJSONLSessionClientUploadsPendingImageBeforeSendingRelayPrompt() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let client = RelayJSONLSessionClient(
+        clientID: "iphone-a",
+        sessionID: "session-1",
+        threadID: "thread-1",
+        turnID: "turn-1",
+        transport: transport,
+        sessionStore: store
+    )
+    var composer = InputComposer(modelDisplay: "5.5")
+    composer.text = "看这张图"
+    let pendingImage = PendingAttachment(
+        name: "photo.png",
+        kind: .image(detail: "high"),
+        data: Data([0x89, 0x50, 0x4E, 0x47]),
+        localCachePath: "/tmp/ios-photo.png"
+    )
+
+    try await client.attach()
+    async let status = client.send(
+        composer: composer,
+        pendingAttachments: [pendingImage],
+        remoteRoot: "~/.codex-port/attachments",
+        writeID: "write-photo",
+        timeout: .milliseconds(500)
+    )
+    let createDirectoryLine = try await transport.waitForSentLine(containing: #""type":"createDirectory""#)
+    let createDirectory = try #require(jsonObject(from: createDirectoryLine))
+    let directoryPath = try #require(createDirectory["path"] as? String)
+    #expect(directoryPath.hasPrefix("~/.codex-port/attachments/thread-1/"))
+    try transport.emit(RelayEndpointJSONLCodec.encodeFileOperationResult(
+        operation: "createDirectory",
+        requestID: try #require(createDirectory["requestID"] as? String),
+        path: directoryPath,
+        clientID: "iphone-a"
+    ))
+
+    let writeFileLine = try await transport.waitForSentLine(containing: #""type":"writeFile""#)
+    let writeFile = try #require(jsonObject(from: writeFileLine))
+    let uploadedPath = try #require(writeFile["path"] as? String)
+    #expect(uploadedPath.hasPrefix(directoryPath))
+    #expect(writeFile["dataBase64"] as? String == pendingImage.data.base64EncodedString())
+    try transport.emit(RelayEndpointJSONLCodec.encodeFileOperationResult(
+        operation: "writeFile",
+        requestID: try #require(writeFile["requestID"] as? String),
+        path: uploadedPath,
+        clientID: "iphone-a"
+    ))
+
+    let promptLine = try await transport.waitForSentLine(containing: #""writeID":"write-photo""#)
+    let prompt = try #require(jsonObject(from: promptLine))
+    let attachments = try #require(prompt["attachments"] as? [[String: Any]])
+    #expect(prompt["text"] as? String == "看这张图")
+    #expect(attachments.count == 1)
+    #expect(attachments.first?["type"] as? String == "localImage")
+    #expect(attachments.first?["path"] as? String == uploadedPath)
+    #expect(attachments.first?["detail"] as? String == "high")
+    try transport.emit(RelayEndpointJSONLCodec.encodeEvent(
+        .writeStatusChanged(writeID: "write-photo", status: .queued),
+        clientID: "iphone-a"
+    ))
+
+    #expect(try await status == .queued)
+    #expect(store.visibleItems == [
+        .structuredUserMessage(StructuredUserMessage(
+            body: "看这张图",
+            attachments: [
+                MessageAttachment(
+                    id: "photo.png",
+                    kind: .image(contentType: nil, detail: "high"),
+                    displayName: "photo.png",
+                    source: .localCache(path: "/tmp/ios-photo.png")
+                ),
+            ]
+        )),
+    ])
+}
+
 @Test func relayJSONLSessionClientShowsThinkingRowAfterPromptWriteQueued() async throws {
     let transport = RecordingRelayJSONLTransport()
     let store = SessionStore(protocolClient: FakeCodexProtocol())
@@ -730,6 +810,18 @@ private final class RecordingRelayJSONLTransport: RelayJSONLTransport, @unchecke
         }
     }
 
+    func waitForSentLine(containing needle: String, timeout: Duration = .milliseconds(300)) async throws -> String {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if let line = lock.withLock({ sentLines.first(where: { $0.contains(needle) }) }) {
+                return line
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw RelayJSONLSessionClientError.timedOut
+    }
+
     func firstSentJSONObject() async throws -> [String: Any]? {
         guard let first = await sentLinesSnapshot().first,
               let data = first.data(using: .utf8) else {
@@ -737,6 +829,10 @@ private final class RecordingRelayJSONLTransport: RelayJSONLTransport, @unchecke
         }
         return try JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
+}
+
+private func jsonObject(from line: String) -> [String: Any]? {
+    try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
 }
 
 private final class RelaySessionClientFactoryHarness: @unchecked Sendable {

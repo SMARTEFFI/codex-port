@@ -191,7 +191,7 @@ public final class FakeRelayLiveSessionHub: @unchecked Sendable {
     private func eventsGeneratedByAdapter(for write: RelayLiveSessionWrite, status: RelayWriteStatus) -> [RelayLiveSessionEvent] {
         guard status == .handled else { return [] }
         switch write {
-        case let .prompt(writeID, _, text):
+        case let .prompt(writeID, _, text, _):
             return [
                 .assistantTextDelta(turnID: turnID, itemID: "\(writeID)-assistant", text: "reply to \(text)"),
                 .turnCompleted(turnID: turnID),

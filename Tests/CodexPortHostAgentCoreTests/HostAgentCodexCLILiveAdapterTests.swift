@@ -277,6 +277,36 @@ import Testing
     #expect(mappedEvents.filter { $0 == .userMessage(turnID: "turn-remote", itemID: "write-1", text: "Hi from iPhone") }.count == 1)
 }
 
+@Test func appServerControlSocketLiveProducerIncludesLocalImageAttachmentsInTurnStartInput() async throws {
+    let transport = RecordingCodexAppServerControlTransport()
+    let producer = CodexAppServerControlSocketLiveProducer(transport: transport)
+
+    try await producer.start(session: CodexCLILiveSessionDescriptor(
+        sessionID: "session-1",
+        threadID: "thread-1",
+        turnID: "turn-local"
+    ))
+    let promptTask = Task {
+        await producer.submitPrompt(CodexCLILivePrompt(
+            writeID: "write-photo",
+            threadID: "thread-1",
+            text: "看这张图",
+            attachments: [.localImage(path: "~/.codex-port/attachments/thread-1/123/photo.png", detail: "high")]
+        ))
+    }
+    await transport.waitForRequest(method: "turn/start")
+
+    let turnStart = try #require(await transport.requests.last)
+    let input = try #require(turnStart.params.object?["input"]?.array)
+    #expect(input.count == 2)
+    #expect(input.first?.object?["type"]?.string == "text")
+    #expect(input.first?.object?["text"]?.string == "看这张图")
+    #expect(input[safe: 1]?.object?["type"]?.string == "localImage")
+    #expect(input[safe: 1]?.object?["path"]?.string == "~/.codex-port/attachments/thread-1/123/photo.png")
+    #expect(input[safe: 1]?.object?["detail"]?.string == "high")
+    #expect(await promptTask.value == .accepted)
+}
+
 @Test func appServerControlSocketLiveProducerMapsCommandExecutionStartedToActualCommand() async throws {
     let transport = RecordingCodexAppServerControlTransport()
     let producer = CodexAppServerControlSocketLiveProducer(transport: transport)

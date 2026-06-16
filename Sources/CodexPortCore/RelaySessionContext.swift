@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public final class RelaySessionContext: @unchecked Sendable {
     public let threadID: String

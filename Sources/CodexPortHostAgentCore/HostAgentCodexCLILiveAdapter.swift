@@ -17,11 +17,13 @@ public struct CodexCLILivePrompt: Equatable, Sendable {
     public var writeID: String
     public var threadID: String
     public var text: String
+    public var attachments: [TurnAttachment]
 
-    public init(writeID: String, threadID: String, text: String) {
+    public init(writeID: String, threadID: String, text: String, attachments: [TurnAttachment] = []) {
         self.writeID = writeID
         self.threadID = threadID
         self.text = text
+        self.attachments = attachments
     }
 }
 
@@ -161,7 +163,7 @@ public final class HostAgentCodexCLILiveAdapter: HostAgentLiveSessionAdapter, @u
         }
 
         switch write {
-        case let .prompt(writeID, threadID, text):
+        case let .prompt(writeID, threadID, text, attachments):
             switch await waitUntilProducerStarted() {
             case .ready:
                 break
@@ -169,8 +171,13 @@ public final class HostAgentCodexCLILiveAdapter: HostAgentLiveSessionAdapter, @u
                 logger.record("codex cli live prompt rejected write=\(writeID) reason=start-failed reasonBytes=\(reason.utf8.count)")
                 return .failed(reason: reason)
             }
-            logger.record("codex cli live prompt write=\(writeID) bytes=\(text.utf8.count)")
-            let result = await producer.submitPrompt(CodexCLILivePrompt(writeID: writeID, threadID: threadID, text: text))
+            logger.record("codex cli live prompt write=\(writeID) bytes=\(text.utf8.count) attachments=\(attachments.count)")
+            let result = await producer.submitPrompt(CodexCLILivePrompt(
+                writeID: writeID,
+                threadID: threadID,
+                text: text,
+                attachments: attachments
+            ))
             switch result {
             case .accepted:
                 return .handled

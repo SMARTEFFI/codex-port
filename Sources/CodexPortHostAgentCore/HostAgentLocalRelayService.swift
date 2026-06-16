@@ -118,6 +118,34 @@ public struct HostAgentLocalRelayService: Sendable {
                 let outputLine = try HostAgentLocalRelayJSONLCodec.encodeError(String(describing: error), clientID: clientID)
                 await output(outputLine)
             }
+        case let .createDirectory(clientID, requestID, path, recursive):
+            do {
+                try await remoteFileProvider.createDirectory(path: path, recursive: recursive)
+                let outputLine = try HostAgentLocalRelayJSONLCodec.encodeFileOperationResult(
+                    operation: "createDirectory",
+                    requestID: requestID,
+                    path: path,
+                    clientID: clientID
+                )
+                await output(outputLine)
+            } catch {
+                let outputLine = try HostAgentLocalRelayJSONLCodec.encodeError(String(describing: error), clientID: clientID)
+                await output(outputLine)
+            }
+        case let .writeFile(clientID, requestID, path, dataBase64):
+            do {
+                try await remoteFileProvider.writeFile(path: path, dataBase64: dataBase64)
+                let outputLine = try HostAgentLocalRelayJSONLCodec.encodeFileOperationResult(
+                    operation: "writeFile",
+                    requestID: requestID,
+                    path: path,
+                    clientID: clientID
+                )
+                await output(outputLine)
+            } catch {
+                let outputLine = try HostAgentLocalRelayJSONLCodec.encodeError(String(describing: error), clientID: clientID)
+                await output(outputLine)
+            }
         case let .attach(clientID, request):
             let stream = try await runtime.attach(clientID: clientID, request: request)
             let threadHistoryProvider = self.threadHistoryProvider

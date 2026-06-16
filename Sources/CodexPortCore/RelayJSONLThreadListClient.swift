@@ -93,7 +93,7 @@ public final class RelayJSONLThreadListClient: @unchecked Sendable {
                     case let .error(messageClientID, reason):
                         guard messageClientID == nil || messageClientID == clientID else { continue }
                         throw RelayJSONLThreadListClientError.hostAgentError(reason)
-                    case .event, .writeStatus, .threadHistoryPage, .fileContent:
+                    case .event, .writeStatus, .threadHistoryPage, .fileContent, .fileOperationResult:
                         continue
                     }
                 }

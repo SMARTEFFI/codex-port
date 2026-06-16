@@ -6,6 +6,7 @@ public enum RelayEndpointJSONLMessage: Equatable, Sendable {
     case threadList(clientID: String, requestID: String, threads: [RelayThreadSummarySnapshot], nextCursor: String?)
     case threadHistoryPage(clientID: String, RelayThreadHistoryPage)
     case fileContent(clientID: String, RelayRemoteFileContent)
+    case fileOperationResult(clientID: String, operation: String, requestID: String, path: String)
     case error(clientID: String?, reason: String)
 
     public var telemetryDescription: String {
@@ -20,6 +21,8 @@ public enum RelayEndpointJSONLMessage: Equatable, Sendable {
             "threadHistoryPage client=\(clientID) request=\(page.requestID) thread=\(page.threadID) items=\(page.items.count) status=\(page.status.rawValue)"
         case let .fileContent(clientID, content):
             "fileContent client=\(clientID) request=\(content.requestID) pathBytes=\(content.path.utf8.count) bytes=\(content.byteCount)"
+        case let .fileOperationResult(clientID, operation, requestID, path):
+            "fileOperationResult client=\(clientID) operation=\(operation) request=\(requestID) pathBytes=\(path.utf8.count)"
         case let .error(clientID, reason):
             "error client=\(clientID ?? "none") reasonBytes=\(reason.utf8.count)"
         }
@@ -144,6 +147,21 @@ public enum RelayEndpointJSONLCodec {
         return try encode(object)
     }
 
+    public static func encodeFileOperationResult(
+        operation: String,
+        requestID: String,
+        path: String,
+        clientID: String
+    ) throws -> String {
+        try encode([
+            "type": "fileOperationResult",
+            "clientID": clientID,
+            "operation": operation,
+            "requestID": requestID,
+            "path": path,
+        ])
+    }
+
     public static func decodeLine(_ line: String) throws -> RelayEndpointJSONLMessage {
         guard let data = line.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -192,6 +210,13 @@ public enum RelayEndpointJSONLCodec {
                     byteCount: int("byteCount", in: object) ?? 0,
                     dataBase64: try string("dataBase64", in: object)
                 )
+            )
+        case "fileOperationResult":
+            return .fileOperationResult(
+                clientID: try string("clientID", in: object),
+                operation: try string("operation", in: object),
+                requestID: try string("requestID", in: object),
+                path: try string("path", in: object)
             )
         case "error":
             return .error(clientID: object["clientID"] as? String, reason: (object["reason"] as? String) ?? "")

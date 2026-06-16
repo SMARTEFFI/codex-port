@@ -1,4 +1,5 @@
 import Foundation
+import CodexPortShared
 
 public protocol CodexTransport: AnyObject, Sendable {
     func request(method: String, params: JSONValue, timeoutSeconds: Double?) async throws -> JSONValue
@@ -8,11 +9,6 @@ public extension CodexTransport {
     func request(method: String, params: JSONValue) async throws -> JSONValue {
         try await request(method: method, params: params, timeoutSeconds: nil)
     }
-}
-
-public enum TurnAttachment: Equatable, Sendable {
-    case localImage(path: String, detail: String?)
-    case remoteFile(path: String)
 }
 
 public enum CollaborationMode: Equatable, Sendable {

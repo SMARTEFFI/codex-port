@@ -1,5 +1,6 @@
 import Foundation
 @testable import CodexPortCore
+@testable import CodexPortShared
 
 final class InMemoryCredentialVault: CredentialVault {
     private var secrets: [String: (secret: String, protection: CredentialProtection)] = [:]

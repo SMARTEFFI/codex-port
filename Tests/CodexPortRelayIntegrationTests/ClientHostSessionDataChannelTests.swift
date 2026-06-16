@@ -610,6 +610,32 @@ private actor MultiDeviceHostSessionHub {
             Task {
                 try? await send(.sessionStarted(sessionID: sessionID, threadID: threadID, turnID: turnID), to: clientID)
             }
+        case let .createDirectory(clientID, requestID, path, _):
+            Task {
+                let line = try? RelayEndpointJSONLCodec.encodeFileOperationResult(
+                    operation: "createDirectory",
+                    requestID: requestID,
+                    path: path,
+                    clientID: clientID
+                )
+                guard let line else { return }
+                for transport in transports {
+                    try? await transport.sendLine(line)
+                }
+            }
+        case let .writeFile(clientID, requestID, path, _):
+            Task {
+                let line = try? RelayEndpointJSONLCodec.encodeFileOperationResult(
+                    operation: "writeFile",
+                    requestID: requestID,
+                    path: path,
+                    clientID: clientID
+                )
+                guard let line else { return }
+                for transport in transports {
+                    try? await transport.sendLine(line)
+                }
+            }
         case .listThreads, .loadHistory, .readFile, .detach, .stop:
             break
         }
@@ -625,7 +651,7 @@ private actor MultiDeviceHostSessionHub {
             await append(write)
             await broadcast(.writeStatusChanged(writeID: write.writeID, status: .queued))
             await broadcast(.writeStatusChanged(writeID: write.writeID, status: .running))
-            if case let .prompt(writeID, _, text) = write {
+            if case let .prompt(writeID, _, text, _) = write {
                 await broadcast(.assistantTextDelta(turnID: turnID, itemID: "\(writeID)-assistant", text: "reply to \(text)"))
                 await broadcast(.turnCompleted(turnID: turnID))
             } else if case .interrupt = write {
