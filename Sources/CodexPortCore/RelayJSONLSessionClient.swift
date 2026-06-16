@@ -35,6 +35,7 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
     private let lock = NSLock()
     private var latestWriteStatusStorage: WriteStatusUpdate?
     private var receiveTask: Task<Void, Never>?
+    private var pendingThreadStarts: [String: CheckedContinuation<RelayThreadSummarySnapshot, Error>] = [:]
     private var pendingHistoryPages: [String: CheckedContinuation<RelayThreadHistoryPage, Error>] = [:]
     private var pendingRemoteFiles: [String: CheckedContinuation<RemoteFileContent, Error>] = [:]
     private var pendingFileOperations: [String: CheckedContinuation<Void, Error>] = [:]
@@ -82,6 +83,49 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
             command["cwd"] = cwd
         }
         try await transport.sendLine(try encodeCommand(command))
+    }
+
+    public func startThread(
+        cwd: String,
+        requestID: String = UUID().uuidString,
+        timeout: Duration = .seconds(10)
+    ) async throws -> RelayThreadSummarySnapshot {
+        startReceivingIfNeeded()
+        let line = try encodeCommand([
+            "type": "startThread",
+            "clientID": clientID,
+            "requestID": requestID,
+            "cwd": cwd,
+        ])
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let replacedContinuation = lock.withLock {
+                    pendingThreadStarts.updateValue(continuation, forKey: requestID)
+                }
+                replacedContinuation?.resume(throwing: RelayJSONLSessionClientError.timedOut)
+                Task { [weak self] in
+                    guard let self else { return }
+                    let timeoutTask = Task { [weak self] in
+                        try? await Task.sleep(for: timeout)
+                        self?.resumePendingThreadStart(
+                            requestID: requestID,
+                            result: .failure(RelayJSONLSessionClientError.timedOut)
+                        )
+                    }
+                    do {
+                        try await self.transport.sendLine(line)
+                    } catch {
+                        timeoutTask.cancel()
+                        self.resumePendingThreadStart(requestID: requestID, result: .failure(error))
+                    }
+                }
+            }
+        } onCancel: {
+            resumePendingThreadStart(
+                requestID: requestID,
+                result: .failure(RelayJSONLSessionClientError.timedOut)
+            )
+        }
     }
 
     public func sendPrompt(_ text: String, writeID: String = UUID().uuidString) async throws {
@@ -346,17 +390,22 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
     public func stop() {
         receiveTask?.cancel()
         receiveTask = nil
-        let (historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations) = lock.withLock {
+        let (threadStartContinuations, historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations) = lock.withLock {
+            let threadStartContinuations = Array(pendingThreadStarts.values)
             let historyContinuations = Array(pendingHistoryPages.values)
             let fileContinuations = Array(pendingRemoteFiles.values)
             let fileOperationContinuations = Array(pendingFileOperations.values)
             let writeContinuations = Array(pendingWriteStatusAcceptances.values)
+            pendingThreadStarts.removeAll()
             pendingHistoryPages.removeAll()
             pendingRemoteFiles.removeAll()
             pendingFileOperations.removeAll()
             pendingWriteStatusAcceptances.removeAll()
             pendingPromptMessages.removeAll()
-            return (historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations)
+            return (threadStartContinuations, historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations)
+        }
+        for continuation in threadStartContinuations {
+            continuation.resume(throwing: RelayJSONLSessionClientError.timedOut)
         }
         for continuation in historyContinuations {
             continuation.resume(throwing: RelayJSONLSessionClientError.timedOut)
@@ -396,6 +445,9 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
             recordWriteStatus(sessionID: messageSessionID, writeID: writeID, status: status)
         case .threadList:
             break
+        case let .threadStarted(messageClientID, requestID, thread):
+            guard messageClientID == clientID else { return }
+            resumePendingThreadStart(requestID: requestID, result: .success(thread))
         case let .threadHistoryPage(messageClientID, page):
             guard messageClientID == clientID else { return }
             sessionStore.receive(relayHistoryPage: page)
@@ -424,17 +476,22 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
             resumePendingFileOperation(requestID: requestID, result: .success(()))
         case let .error(messageClientID, reason):
             guard messageClientID == nil || messageClientID == clientID else { return }
-            let (historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations) = lock.withLock {
+            let (threadStartContinuations, historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations) = lock.withLock {
+                let threadStartContinuations = Array(pendingThreadStarts.values)
                 let historyContinuations = Array(pendingHistoryPages.values)
                 let fileContinuations = Array(pendingRemoteFiles.values)
                 let fileOperationContinuations = Array(pendingFileOperations.values)
                 let writeContinuations = Array(pendingWriteStatusAcceptances.values)
+                pendingThreadStarts.removeAll()
                 pendingHistoryPages.removeAll()
                 pendingRemoteFiles.removeAll()
                 pendingFileOperations.removeAll()
                 pendingWriteStatusAcceptances.removeAll()
                 pendingPromptMessages.removeAll()
-                return (historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations)
+                return (threadStartContinuations, historyContinuations, fileContinuations, fileOperationContinuations, writeContinuations)
+            }
+            for continuation in threadStartContinuations {
+                continuation.resume(throwing: RelayJSONLSessionClientError.hostAgentError(reason))
             }
             for continuation in historyContinuations {
                 continuation.resume(throwing: RelayJSONLSessionClientError.hostAgentError(reason))
@@ -492,6 +549,21 @@ public final class RelayJSONLSessionClient: @unchecked Sendable {
         switch result {
         case let .success(status):
             continuation?.resume(returning: status)
+        case let .failure(error):
+            continuation?.resume(throwing: error)
+        }
+    }
+
+    private func resumePendingThreadStart(
+        requestID: String,
+        result: Result<RelayThreadSummarySnapshot, Error>
+    ) {
+        let continuation = lock.withLock {
+            pendingThreadStarts.removeValue(forKey: requestID)
+        }
+        switch result {
+        case let .success(thread):
+            continuation?.resume(returning: thread)
         case let .failure(error):
             continuation?.resume(throwing: error)
         }

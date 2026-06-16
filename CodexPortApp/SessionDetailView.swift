@@ -39,6 +39,8 @@ struct SessionDetailView: View {
     @State private var transcriptRows: [TranscriptRow] = []
     @State private var scrollToBottomRequest = 0
     @State private var imageGallery: ImageAttachmentGalleryState?
+    @State private var resolvedImageAttachmentSources: [String: MessageAttachmentSource] = [:]
+    @State private var resolvingImageAttachmentKeys: Set<String> = []
     private let pickedAttachmentHandler = PickedAttachmentHandler()
     private let bottomAnchorID = "session-bottom-anchor"
     private let liveTimelineRefreshIntervalNanos: UInt64 = 80_000_000
@@ -663,6 +665,74 @@ struct SessionDetailView: View {
         else {
             return
         }
+        resolveRemoteGalleryImage(
+            rowID: row.id,
+            item: item,
+            path: path,
+            using: relaySessionClientManager,
+            updateGallery: true
+        )
+    }
+
+    private func refreshTranscriptRows() {
+        let rows = TranscriptPresentation.rows(
+            for: timeline.items,
+            expandedToolRowIDs: expandedToolRowIDs,
+            status: sessionStore?.status
+        )
+        transcriptRows = rows.map(applyingResolvedImageSources)
+        prefetchVisibleRemoteImages(in: transcriptRows)
+    }
+
+    private func applyingResolvedImageSources(to row: TranscriptRow) -> TranscriptRow {
+        guard !row.imageAttachments.isEmpty else { return row }
+        var row = row
+        row.imageAttachments = row.imageAttachments.map { item in
+            guard let source = resolvedImageAttachmentSources[resolvedImageKey(rowID: row.id, imageID: item.id)] else { return item }
+            var next = item
+            switch source {
+            case let .localCache(path):
+                next.availability = .available(localPath: path)
+            case let .remoteHostPath(path):
+                next.availability = .remote(path: path)
+            case let .unavailable(reason):
+                next.availability = .unavailable(reason)
+            }
+            return next
+        }
+        return row
+    }
+
+    private func prefetchVisibleRemoteImages(in rows: [TranscriptRow]) {
+        guard let relaySessionClientManager else { return }
+        for row in rows {
+            for item in row.imageAttachments {
+                guard case let .remote(path) = item.availability else { continue }
+                resolveRemoteGalleryImage(
+                    rowID: row.id,
+                    item: item,
+                    path: path,
+                    using: relaySessionClientManager,
+                    updateGallery: false
+                )
+            }
+        }
+    }
+
+    private func resolvedImageKey(rowID: String, imageID: String) -> String {
+        "\(rowID):\(imageID)"
+    }
+
+    private func resolveRemoteGalleryImage(
+        rowID: String,
+        item: ImageAttachmentGalleryItem,
+        path: String,
+        using relaySessionClientManager: RelayJSONLSessionClientManager,
+        updateGallery: Bool
+    ) {
+        let key = resolvedImageKey(rowID: rowID, imageID: item.id)
+        guard !resolvingImageAttachmentKeys.contains(key) else { return }
+        resolvingImageAttachmentKeys.insert(key)
         let attachment = MessageAttachment(
             id: item.id,
             kind: .image(contentType: nil, detail: "high"),
@@ -680,19 +750,15 @@ struct SessionDetailView: View {
                 return
             }
             await MainActor.run {
-                guard var gallery = imageGallery else { return }
-                gallery.replaceItem(resolvedItem)
-                imageGallery = gallery
+                resolvingImageAttachmentKeys.remove(key)
+                resolvedImageAttachmentSources[key] = resolvedAttachment.source
+                if updateGallery, var gallery = imageGallery {
+                    gallery.replaceItem(resolvedItem)
+                    imageGallery = gallery
+                }
+                refreshTranscriptRows()
             }
         }
-    }
-
-    private func refreshTranscriptRows() {
-        transcriptRows = TranscriptPresentation.rows(
-            for: timeline.items,
-            expandedToolRowIDs: expandedToolRowIDs,
-            status: sessionStore?.status
-        )
     }
 
     private func sessionErrorMessage(for error: Error) -> String {
@@ -799,9 +865,16 @@ private struct SessionItemView: View {
             .copyableTranscriptRow(row)
         case .assistantText:
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
-                    TranscriptBlockView(block: block)
+                ForEach(Array(linkedBlocks(for: row).enumerated()), id: \.offset) { _, block in
+                    TranscriptBlockView(
+                        block: block.block,
+                        links: block.links,
+                        onOpenLink: { link in
+                            openTranscriptLink(link)
+                        }
+                    )
                 }
+                TranscriptImageAttachmentStrip(row: row, onOpenImage: onOpenImage)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
@@ -868,6 +941,32 @@ private struct SessionItemView: View {
                 .copyableTranscriptRow(row)
         }
     }
+
+    private func openTranscriptLink(_ link: TranscriptLink) {
+        if let imageAttachmentID = link.imageAttachmentID {
+            onOpenImage(imageAttachmentID)
+        }
+    }
+
+    private func linkedBlocks(for row: TranscriptRow) -> [(block: TranscriptBlock, links: [TranscriptLink])] {
+        var remainingLinks = row.links
+        return row.blocks.map { block in
+            guard case let .text(text) = block, !remainingLinks.isEmpty else {
+                return (block, [])
+            }
+            var linksInBlock: [TranscriptLink] = []
+            var stillRemaining: [TranscriptLink] = []
+            for link in remainingLinks {
+                if text.contains(link.displayText) {
+                    linksInBlock.append(link)
+                } else {
+                    stillRemaining.append(link)
+                }
+            }
+            remainingLinks = stillRemaining
+            return (block, linksInBlock)
+        }
+    }
 }
 
 private struct UserMessageBubble: View {
@@ -891,22 +990,31 @@ private struct UserMessageBubble: View {
                     .textSelection(.enabled)
             }
 
-            if !row.imageAttachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(row.imageAttachments) { attachment in
-                            TranscriptImageThumbnail(item: attachment) {
-                                onOpenImage(attachment.id)
-                            }
-                        }
-                    }
-                }
-            }
+            TranscriptImageAttachmentStrip(row: row, onOpenImage: onOpenImage)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Color.accentColor.opacity(0.14))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct TranscriptImageAttachmentStrip: View {
+    let row: TranscriptRow
+    let onOpenImage: (String) -> Void
+
+    var body: some View {
+        if !row.imageAttachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(row.imageAttachments) { attachment in
+                        TranscriptImageThumbnail(item: attachment) {
+                            onOpenImage(attachment.id)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1297,11 +1405,13 @@ private struct JumpToLatestButton: View {
 
 private struct TranscriptBlockView: View {
     let block: TranscriptBlock
+    var links: [TranscriptLink] = []
+    var onOpenLink: ((TranscriptLink) -> Void)?
 
     var body: some View {
         switch block {
         case let .text(text):
-            MarkdownTextBlockView(text: text)
+            MarkdownTextBlockView(text: text, links: links, onOpenLink: onOpenLink)
         case let .code(language, text):
             TranscriptCodeBlockView(language: language, text: text)
         }
@@ -1310,6 +1420,8 @@ private struct TranscriptBlockView: View {
 
 private struct MarkdownTextBlockView: View {
     let text: String
+    var links: [TranscriptLink] = []
+    var onOpenLink: ((TranscriptLink) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -1335,6 +1447,15 @@ private struct MarkdownTextBlockView: View {
                 }
             }
         }
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "codexport-image",
+                  let link = links.first(where: { $0.id == url.host() })
+            else {
+                return .systemAction
+            }
+            onOpenLink?(link)
+            return .handled
+        })
     }
 
     private var lines: [MarkdownTextLine] {
@@ -1348,7 +1469,7 @@ private struct MarkdownTextBlockView: View {
         var output = Text("")
         for (index, part) in parts.enumerated() {
             if index.isMultiple(of: 2) {
-                output = output + Text(part)
+                output = output + Text(linkedText(part))
             } else {
                 output = output + Text(part)
                     .font(.body.monospaced())
@@ -1356,6 +1477,37 @@ private struct MarkdownTextBlockView: View {
             }
         }
         return output
+    }
+
+    private func linkedText(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard !links.isEmpty else { return attributed }
+        var searchStart = attributed.startIndex
+        for link in links {
+            guard let range = attributed[searchStart...].range(of: link.displayText) else {
+                continue
+            }
+            attributed[range].foregroundColor = .blue
+            attributed[range].underlineStyle = .single
+            attributed[range].link = link.imageAttachmentID == nil
+                ? externalURL(for: link.target)
+                : URL(string: "codexport-image://\(link.id)")
+            searchStart = range.upperBound
+        }
+        return attributed
+    }
+
+    private func externalURL(for target: String) -> URL? {
+        if let url = URL(string: target), url.scheme != nil {
+            return url
+        }
+        if target.hasPrefix("/") || target.hasPrefix("~/") {
+            let path = target.hasPrefix("~/")
+                ? NSString(string: target).expandingTildeInPath
+                : target
+            return URL(fileURLWithPath: path)
+        }
+        return nil
     }
 }
 

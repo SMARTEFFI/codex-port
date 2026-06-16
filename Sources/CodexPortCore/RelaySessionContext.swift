@@ -75,6 +75,12 @@ public final class RelaySessionContextRegistry: @unchecked Sendable {
         }
     }
 
+    public func upsertAllowedThread(_ thread: ThreadSummary) {
+        lock.withLock {
+            allowedThreadsByID[thread.id] = thread
+        }
+    }
+
     public func context(threadID: String) -> RelaySessionContext? {
         lock.withLock {
             guard let thread = allowedThreadsByID[threadID] else { return nil }

@@ -44,6 +44,8 @@ import Testing
     #expect(relay.directProtocolClient == nil)
     #expect(relay.relayThreadSummaries.map(\.id) == ["thread-1"])
     #expect(relay.isRelay)
+    #expect(direct.canStartProjectSession)
+    #expect(relay.canStartProjectSession)
     #expect(relay.relaySessionContext(threadID: "thread-1") != nil)
     #expect(relay.relaySessionContext(threadID: "missing-thread") == nil)
 }

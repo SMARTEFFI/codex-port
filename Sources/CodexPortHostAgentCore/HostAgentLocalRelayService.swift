@@ -18,6 +18,7 @@ public actor HostAgentLocalRelayOutputBuffer {
 public struct HostAgentLocalRelayService: Sendable {
     private let runtime: HostAgentLocalRelayRuntime
     private let threadListProvider: HostAgentThreadListProviding
+    private let threadStarter: HostAgentThreadStarting
     private let threadHistoryProvider: HostAgentThreadHistoryProviding
     private let remoteFileProvider: HostAgentRemoteFileProviding
     private let threadHistoryTimeout: Duration
@@ -25,12 +26,14 @@ public struct HostAgentLocalRelayService: Sendable {
     public init(
         commandFactory: @escaping HostAgentLocalRelayRuntime.CommandFactory,
         threadListProvider: HostAgentThreadListProviding = HostAgentCodexAppServerThreadListProvider(),
+        threadStarter: HostAgentThreadStarting = HostAgentCodexAppServerThreadListProvider(),
         threadHistoryProvider: HostAgentThreadHistoryProviding = HostAgentCodexAppServerThreadListProvider(),
         remoteFileProvider: HostAgentRemoteFileProviding = HostAgentRemoteFileProvider(),
         threadHistoryTimeout: Duration = .seconds(8)
     ) {
         self.runtime = HostAgentLocalRelayRuntime(commandFactory: commandFactory)
         self.threadListProvider = threadListProvider
+        self.threadStarter = threadStarter
         self.threadHistoryProvider = threadHistoryProvider
         self.remoteFileProvider = remoteFileProvider
         self.threadHistoryTimeout = threadHistoryTimeout
@@ -39,12 +42,14 @@ public struct HostAgentLocalRelayService: Sendable {
     public init(
         adapterFactory: @escaping HostAgentLocalRelayRuntime.AdapterFactory,
         threadListProvider: HostAgentThreadListProviding = HostAgentCodexAppServerThreadListProvider(),
+        threadStarter: HostAgentThreadStarting = HostAgentCodexAppServerThreadListProvider(),
         threadHistoryProvider: HostAgentThreadHistoryProviding = HostAgentCodexAppServerThreadListProvider(),
         remoteFileProvider: HostAgentRemoteFileProviding = HostAgentRemoteFileProvider(),
         threadHistoryTimeout: Duration = .seconds(8)
     ) {
         self.runtime = HostAgentLocalRelayRuntime(adapterFactory: adapterFactory)
         self.threadListProvider = threadListProvider
+        self.threadStarter = threadStarter
         self.threadHistoryProvider = threadHistoryProvider
         self.remoteFileProvider = remoteFileProvider
         self.threadHistoryTimeout = threadHistoryTimeout
@@ -79,6 +84,19 @@ public struct HostAgentLocalRelayService: Sendable {
                     clientID: clientID,
                     requestID: requestID,
                     nextCursor: response.nextCursor
+                )
+                await output(outputLine)
+            } catch {
+                let outputLine = try HostAgentLocalRelayJSONLCodec.encodeError(String(describing: error), clientID: clientID)
+                await output(outputLine)
+            }
+        case let .startThread(clientID, requestID, cwd):
+            do {
+                let thread = try await threadStarter.startThread(cwd: cwd)
+                let outputLine = try HostAgentLocalRelayJSONLCodec.encodeThreadStarted(
+                    thread,
+                    clientID: clientID,
+                    requestID: requestID
                 )
                 await output(outputLine)
             } catch {

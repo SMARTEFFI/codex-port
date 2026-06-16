@@ -19,6 +19,7 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
     public var blocks: [TranscriptBlock]
     public var diffLines: [TranscriptDiffLine]
     public var skillChips: [TranscriptSkillChip]
+    public var links: [TranscriptLink]
     public var imageAttachments: [ImageAttachmentGalleryItem]
     public var copyPayload: String?
 
@@ -37,6 +38,7 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
         blocks: [TranscriptBlock] = [],
         diffLines: [TranscriptDiffLine] = [],
         skillChips: [TranscriptSkillChip] = [],
+        links: [TranscriptLink] = [],
         imageAttachments: [ImageAttachmentGalleryItem] = [],
         copyPayload: String? = nil
     ) {
@@ -50,6 +52,7 @@ public struct TranscriptRow: Equatable, Identifiable, Sendable {
         self.blocks = blocks
         self.diffLines = diffLines
         self.skillChips = skillChips
+        self.links = links
         self.imageAttachments = imageAttachments
         self.copyPayload = copyPayload
     }
@@ -62,6 +65,20 @@ public struct TranscriptSkillChip: Equatable, Sendable {
     public init(identifier: String, displayName: String) {
         self.identifier = identifier
         self.displayName = displayName
+    }
+}
+
+public struct TranscriptLink: Equatable, Identifiable, Sendable {
+    public var id: String
+    public var displayText: String
+    public var target: String
+    public var imageAttachmentID: String?
+
+    public init(id: String, displayText: String, target: String, imageAttachmentID: String? = nil) {
+        self.id = id
+        self.displayText = displayText
+        self.target = target
+        self.imageAttachmentID = imageAttachmentID
     }
 }
 
@@ -85,11 +102,14 @@ public enum TranscriptPresentation {
                     copyPayload: message.body
                 )
             case let .assistantMessage(text):
+                let assistantMarkdown = MarkdownImageCompatibilityParser.assistantPresentation(from: text)
                 return TranscriptRow(
                     id: "\(index)-assistant",
                     kind: .assistantText,
-                    body: text,
-                    blocks: MarkdownCodeBlockParser.blocks(in: text),
+                    body: assistantMarkdown.displayText,
+                    blocks: MarkdownCodeBlockParser.blocks(in: assistantMarkdown.displayText),
+                    links: assistantMarkdown.links,
+                    imageAttachments: assistantMarkdown.imageAttachments.compactMap(ImageAttachmentGalleryItem.init(attachment:)),
                     copyPayload: text
                 )
             case let .commandOutput(text):

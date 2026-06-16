@@ -293,7 +293,7 @@ import Testing
                     writeID: writeID
                 ) + "\n").utf8))
                 return
-            case .listThreads, .loadHistory, .readFile, .attach, .detach, .stop:
+            case .listThreads, .startThread, .loadHistory, .readFile, .attach, .detach, .stop:
                 continue
             }
         }
@@ -727,7 +727,7 @@ private actor MultiDeviceHostSessionHub {
                     try? await transport.sendLine(line)
                 }
             }
-        case .listThreads, .loadHistory, .readFile, .detach, .stop:
+        case .listThreads, .startThread, .loadHistory, .readFile, .detach, .stop:
             break
         }
     }

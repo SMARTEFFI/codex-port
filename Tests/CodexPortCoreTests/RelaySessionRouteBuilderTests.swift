@@ -74,6 +74,47 @@ import Testing
     #expect(first?.clientManager === second?.clientManager)
 }
 
+@Test func relaySessionRouteCanAppendNewRelayThreadAndExposeContext() throws {
+    let relayHost = RelayHost(
+        hostAgentID: UUID(uuidString: "00000000-0000-0000-0000-000000000041")!,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: "pairing-1",
+        deviceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+        relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+        presence: .online(activeConnectionCount: 1),
+        diagnosticsSummary: "Ready"
+    )
+    let route = RelaySessionRouteBuilder.route(
+        profileDefaultDirectory: "/Users/chenm",
+        relayHost: relayHost,
+        threadSnapshots: [
+            RelayThreadSummarySnapshot(
+                id: "thread-1",
+                cwd: "/Users/chenm/Projects/codex-port",
+                updatedAtUnixTime: 1_780_991_312,
+                preview: "Relay thread",
+                gitRepository: nil,
+                gitBranch: nil,
+                status: "completed"
+            ),
+        ],
+        makeTransport: { _ in RecordingRelayJSONLTransportForBuilder() }
+    )
+    let newThread = ThreadSummary(
+        id: "new-thread",
+        cwd: "/Users/chenm/Projects/codex-port",
+        updatedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        preview: "新会话",
+        gitInfo: nil
+    )
+
+    let updatedRoute = route.appendingRelayThread(newThread)
+
+    #expect(updatedRoute.relayThreadSummaries.map(\.id) == ["new-thread", "thread-1"])
+    #expect(updatedRoute.relaySessionContext(threadID: "new-thread") != nil)
+}
+
 @Test func relaySessionRouteBuilderPassesThreadCWDIntoRelaySessionClientAttach() async throws {
     let relayHost = RelayHost(
         hostAgentID: UUID(uuidString: "00000000-0000-0000-0000-000000000041")!,

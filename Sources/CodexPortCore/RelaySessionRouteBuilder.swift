@@ -42,7 +42,7 @@ public enum RelaySessionRouteBuilder {
     }
 }
 
-private extension ThreadSummary {
+public extension ThreadSummary {
     init(relaySnapshot snapshot: RelayThreadSummarySnapshot) {
         let gitInfo: GitInfo?
         if let repository = snapshot.gitRepository, let branch = snapshot.gitBranch {

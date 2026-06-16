@@ -65,6 +65,49 @@ import Testing
     #expect(attach["cwd"] as? String == "/Users/chenm/Projects/codex-port")
 }
 
+@Test func relayJSONLSessionClientStartsThreadAndParsesThreadStartedResponse() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let client = RelayJSONLSessionClient(
+        clientID: "iphone-a",
+        sessionID: "anchor-thread",
+        threadID: "anchor-thread",
+        turnID: "anchor-turn",
+        transport: transport,
+        sessionStore: store
+    )
+    let startedThread = RelayThreadSummarySnapshot(
+        id: "new-thread",
+        cwd: "/repo/app",
+        updatedAtUnixTime: 1_800_000_000,
+        preview: "新会话",
+        gitRepository: nil,
+        gitBranch: nil,
+        status: "completed"
+    )
+
+    async let result = client.startThread(
+        cwd: "/repo/app",
+        requestID: "start-1",
+        timeout: .milliseconds(300)
+    )
+    await waitUntil {
+        (try? transport.sentLinesSyncSnapshot().contains { $0.contains(#""type":"startThread""#) }) == true
+    }
+    let startCommand = try #require(await transport.firstSentJSONObject())
+    #expect(startCommand["type"] as? String == "startThread")
+    #expect(startCommand["clientID"] as? String == "iphone-a")
+    #expect(startCommand["requestID"] as? String == "start-1")
+    #expect(startCommand["cwd"] as? String == "/repo/app")
+    try transport.emit(RelayEndpointJSONLCodec.encodeThreadStarted(
+        startedThread,
+        clientID: "iphone-a",
+        requestID: "start-1"
+    ))
+
+    #expect(try await result == startedThread)
+}
+
 @Test func relayJSONLSessionClientReadsRemoteFileContentOverJSONL() async throws {
     let transport = RecordingRelayJSONLTransport()
     let store = SessionStore(protocolClient: FakeCodexProtocol())

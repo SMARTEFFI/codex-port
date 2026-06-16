@@ -112,6 +112,77 @@ import Testing
     ])
 }
 
+@Test func transcriptPresentationRendersAssistantMarkdownImageLinksAsLinksAndThumbnails() {
+    let rows = TranscriptPresentation.rows(for: [
+        .assistantMessage("""
+        核查截图：
+
+        [desktop](/Users/chenm/Projects/actus-agent-ux/docs/brand/pinch-grip-master-board-desktop.png)
+        [mobile](file:///Users/chenm/Projects/actus-agent-ux/docs/brand/pinch-grip-master-board-mobile.png)
+
+        已完成。
+        """)
+    ])
+
+    #expect(rows[0].body == "核查截图：\n\ndesktop↗\nmobile↗\n\n已完成。")
+    #expect(rows[0].blocks == [.text("核查截图：\n\ndesktop↗\nmobile↗\n\n已完成。")])
+    #expect(rows[0].links == [
+        TranscriptLink(
+            id: "assistant-link-0",
+            displayText: "desktop↗",
+            target: "/Users/chenm/Projects/actus-agent-ux/docs/brand/pinch-grip-master-board-desktop.png",
+            imageAttachmentID: "assistant-image-0"
+        ),
+        TranscriptLink(
+            id: "assistant-link-1",
+            displayText: "mobile↗",
+            target: "file:///Users/chenm/Projects/actus-agent-ux/docs/brand/pinch-grip-master-board-mobile.png",
+            imageAttachmentID: "assistant-image-1"
+        ),
+    ])
+    #expect(rows[0].imageAttachments == [
+        ImageAttachmentGalleryItem(
+            id: "assistant-image-0",
+            displayName: "pinch-grip-master-board-desktop.png",
+            availability: .remote(path: "/Users/chenm/Projects/actus-agent-ux/docs/brand/pinch-grip-master-board-desktop.png")
+        ),
+        ImageAttachmentGalleryItem(
+            id: "assistant-image-1",
+            displayName: "pinch-grip-master-board-mobile.png",
+            availability: .remote(path: "/Users/chenm/Projects/actus-agent-ux/docs/brand/pinch-grip-master-board-mobile.png")
+        ),
+    ])
+    #expect(rows[0].copyPayload?.contains("[desktop](") == true)
+}
+
+@Test func transcriptPresentationKeepsNonImageAssistantMarkdownLinksOutOfImageAttachments() {
+    let rows = TranscriptPresentation.rows(for: [
+        .assistantMessage("""
+        产物：
+        [report](/Users/chenm/Projects/actus-agent-ux/docs/report.html)
+        [notes](https://example.com/notes)
+        """)
+    ])
+
+    #expect(rows[0].body == "产物：\nreport↗\nnotes↗")
+    #expect(rows[0].links == [
+        TranscriptLink(
+            id: "assistant-link-0",
+            displayText: "report↗",
+            target: "/Users/chenm/Projects/actus-agent-ux/docs/report.html",
+            imageAttachmentID: nil
+        ),
+        TranscriptLink(
+            id: "assistant-link-1",
+            displayText: "notes↗",
+            target: "https://example.com/notes",
+            imageAttachmentID: nil
+        ),
+    ])
+    #expect(rows[0].imageAttachments.isEmpty)
+    #expect(rows[0].copyPayload?.contains("[report](") == true)
+}
+
 @Test func transcriptPresentationFallsBackForUnknownCodeLanguagesAndClassifiesDiffLines() {
     let codeRows = TranscriptPresentation.rows(for: [
         .assistantMessage("""

@@ -33,6 +33,34 @@ import Testing
     ))
 }
 
+@Test func hostAgentLocalRelayServiceStartsThreadAndReturnsSnapshot() async throws {
+    let starter = RecordingHostAgentThreadStarter(thread: RelayThreadSummarySnapshot(
+        id: "new-thread",
+        cwd: "/Users/chenm/Projects/codex-port",
+        updatedAtUnixTime: 1_800_000_000,
+        preview: "新会话",
+        gitRepository: nil,
+        gitBranch: nil,
+        status: "completed"
+    ))
+    let service = HostAgentLocalRelayService(
+        commandFactory: { _ in HostAgentProcessCommand(executablePath: "/bin/false") },
+        threadStarter: starter
+    )
+
+    let output = try await service.runScriptedSession(inputLines: [
+        #"{"type":"startThread","clientID":"iphone-a","requestID":"start-1","cwd":"/Users/chenm/Projects/codex-port"}"#,
+    ])
+
+    #expect(starter.requestedCWDs == ["/Users/chenm/Projects/codex-port"])
+    #expect(output.count == 1)
+    #expect(try RelayEndpointJSONLCodec.decodeLine(output[0]) == .threadStarted(
+        clientID: "iphone-a",
+        requestID: "start-1",
+        thread: starter.thread
+    ))
+}
+
 @Test func hostAgentLocalRelayServiceRunsJSONLAttachAndPromptWithoutEchoingPromptText() async throws {
     let service = HostAgentLocalRelayService(
         commandFactory: { _ in
@@ -246,6 +274,23 @@ import Testing
     #expect(initialTurnsPage["sortDirection"] as? String == "desc")
     #expect(initialTurnsPage["itemsView"] as? String == "full")
     #expect(resumeRequest.params["excludeTurns"] as? Bool == true)
+}
+
+@Test func hostAgentCodexAppServerThreadStarterRequestsOfficialThreadStart() async throws {
+    let transport = CapturingHostAgentJSONRPCTransport()
+    let snapshot = try await HostAgentCodexAppServerThreadListProvider.startThreadSnapshot(
+        cwd: "/Users/chenm/Projects/codex-port",
+        transport: transport,
+        timeout: .seconds(1)
+    )
+
+    let startRequest = try #require(transport.requests.first { $0.method == "thread/start" })
+    #expect(startRequest.params["cwd"] as? String == "/Users/chenm/Projects/codex-port")
+    #expect(startRequest.params["model"] as? String == "gpt-5.5")
+    #expect(snapshot.id == "thread-started")
+    #expect(snapshot.cwd == "/Users/chenm/Projects/codex-port")
+    #expect(snapshot.preview == "新会话")
+    #expect(snapshot.updatedAtUnixTime > 0)
 }
 
 @Test func hostAgentCodexAppServerThreadHistoryProviderMapsOfficialHistoryItems() throws {
@@ -545,6 +590,20 @@ private struct StubHostAgentThreadListProvider: HostAgentThreadListProviding {
     }
 }
 
+private final class RecordingHostAgentThreadStarter: HostAgentThreadStarting, @unchecked Sendable {
+    var thread: RelayThreadSummarySnapshot
+    private(set) var requestedCWDs: [String] = []
+
+    init(thread: RelayThreadSummarySnapshot) {
+        self.thread = thread
+    }
+
+    func startThread(cwd: String) async throws -> RelayThreadSummarySnapshot {
+        requestedCWDs.append(cwd)
+        return thread
+    }
+}
+
 private actor RecordingHostAgentControlTransport: CodexAppServerControlTransporting {
     private(set) var requests: [CodexAppServerControlRequest] = []
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -640,6 +699,15 @@ private final class CapturingHostAgentJSONRPCTransport: HostAgentAppServerJSONRP
     func request(id: Int, method: String, params: [String: Any], timeout: Duration) async throws -> [String: Any] {
         requests.append(Request(id: id, method: method, params: params))
         switch method {
+        case "thread/start":
+            return [
+                "result": [
+                    "thread": [
+                        "id": "thread-started",
+                        "cwd": params["cwd"] as? String ?? "",
+                    ],
+                ],
+            ]
         case "thread/resume":
             return [
                 "result": [

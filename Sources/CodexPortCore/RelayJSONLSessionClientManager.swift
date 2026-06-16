@@ -49,6 +49,24 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
         }
     }
 
+    public func startThread(
+        cwd: String,
+        requestID: String = UUID().uuidString,
+        timeout: Duration = .seconds(10)
+    ) async throws -> RelayThreadSummarySnapshot {
+        let client = try await attach()
+        do {
+            return try await client.startThread(cwd: cwd, requestID: requestID, timeout: timeout)
+        } catch {
+            guard Self.shouldRecreateClient(after: error) else {
+                throw error
+            }
+            discardCurrentClient(client)
+            let replacement = try await makeAttachedClient()
+            return try await replacement.startThread(cwd: cwd, requestID: requestID, timeout: timeout)
+        }
+    }
+
     @discardableResult
     public func sendPromptAndWaitForAcceptance(
         _ text: String,

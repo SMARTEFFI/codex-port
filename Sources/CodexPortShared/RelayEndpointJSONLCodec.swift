@@ -4,6 +4,7 @@ public enum RelayEndpointJSONLMessage: Equatable, Sendable {
     case event(clientID: String, RelayLiveSessionEvent)
     case writeStatus(clientID: String, sessionID: String, writeID: String, RelayWriteStatus)
     case threadList(clientID: String, requestID: String, threads: [RelayThreadSummarySnapshot], nextCursor: String?)
+    case threadStarted(clientID: String, requestID: String, thread: RelayThreadSummarySnapshot)
     case threadHistoryPage(clientID: String, RelayThreadHistoryPage)
     case fileContent(clientID: String, RelayRemoteFileContent)
     case fileOperationResult(clientID: String, operation: String, requestID: String, path: String)
@@ -17,6 +18,8 @@ public enum RelayEndpointJSONLMessage: Equatable, Sendable {
             "writeStatus client=\(clientID) session=\(sessionID) write=\(writeID) status=\(status.wireStatus)"
         case let .threadList(clientID, requestID, threads, _):
             "threadList client=\(clientID) request=\(requestID) count=\(threads.count)"
+        case let .threadStarted(clientID, requestID, thread):
+            "threadStarted client=\(clientID) request=\(requestID) thread=\(thread.id)"
         case let .threadHistoryPage(clientID, page):
             "threadHistoryPage client=\(clientID) request=\(page.requestID) thread=\(page.threadID) items=\(page.items.count) status=\(page.status.rawValue)"
         case let .fileContent(clientID, content):
@@ -115,6 +118,21 @@ public enum RelayEndpointJSONLCodec {
         return try encode(object)
     }
 
+    public static func encodeThreadStarted(
+        _ thread: RelayThreadSummarySnapshot,
+        clientID: String,
+        requestID: String
+    ) throws -> String {
+        let threadData = try JSONEncoder().encode(thread)
+        let threadObject = try JSONSerialization.jsonObject(with: threadData) as? [String: Any] ?? [:]
+        return try encode([
+            "type": "threadStarted",
+            "clientID": clientID,
+            "requestID": requestID,
+            "thread": threadObject,
+        ])
+    }
+
     public static func encodeThreadHistoryPage(_ page: RelayThreadHistoryPage, clientID: String) throws -> String {
         let itemData = try JSONEncoder().encode(page.items)
         let itemObjects = try JSONSerialization.jsonObject(with: itemData) as? [[String: Any]] ?? []
@@ -189,6 +207,12 @@ public enum RelayEndpointJSONLCodec {
                 threads: try threads(from: object),
                 nextCursor: object["nextCursor"] as? String
             )
+        case "threadStarted":
+            return .threadStarted(
+                clientID: try string("clientID", in: object),
+                requestID: try string("requestID", in: object),
+                thread: try thread(from: object)
+            )
         case "threadHistoryPage":
             return .threadHistoryPage(
                 clientID: try string("clientID", in: object),
@@ -237,6 +261,18 @@ public enum RelayEndpointJSONLCodec {
         do {
             let data = try JSONSerialization.data(withJSONObject: threadObjects, options: [])
             return try JSONDecoder().decode([RelayThreadSummarySnapshot].self, from: data)
+        } catch {
+            throw RelayEndpointJSONLCodecError.invalidJSON
+        }
+    }
+
+    private static func thread(from object: [String: Any]) throws -> RelayThreadSummarySnapshot {
+        guard let threadObject = object["thread"] as? [String: Any] else {
+            throw RelayEndpointJSONLCodecError.missingField("thread")
+        }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: threadObject, options: [])
+            return try JSONDecoder().decode(RelayThreadSummarySnapshot.self, from: data)
         } catch {
             throw RelayEndpointJSONLCodecError.invalidJSON
         }

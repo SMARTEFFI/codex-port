@@ -16,12 +16,20 @@ import Testing
     let loadHistoryLine = """
     {"type":"loadHistory","clientID":"iphone-a","requestID":"history-request-1","threadID":"thread-1","limit":10,"cursor":"older-cursor-1"}
     """
+    let startThreadLine = """
+    {"type":"startThread","clientID":"iphone-a","requestID":"start-1","cwd":"/Users/chenm/Projects/codex-port"}
+    """
 
     #expect(try HostAgentLocalRelayJSONLCodec.decodeCommand(from: listThreadsLine) == .listThreads(
         clientID: "iphone-a",
         requestID: "request-1",
         limit: 25,
         cursor: nil
+    ))
+    #expect(try HostAgentLocalRelayJSONLCodec.decodeCommand(from: startThreadLine) == .startThread(
+        clientID: "iphone-a",
+        requestID: "start-1",
+        cwd: "/Users/chenm/Projects/codex-port"
     ))
     #expect(try HostAgentLocalRelayJSONLCodec.decodeCommand(from: attachLine) == .attach(
         clientID: "iphone-a",

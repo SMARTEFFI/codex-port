@@ -76,11 +76,27 @@ public struct RemoteImageAttachmentResolver {
 }
 
 public enum MarkdownImageCompatibilityParser {
+    public struct AssistantPresentation: Equatable, Sendable {
+        public var displayText: String
+        public var links: [TranscriptLink]
+        public var imageAttachments: [MessageAttachment]
+
+        public init(displayText: String, links: [TranscriptLink], imageAttachments: [MessageAttachment]) {
+            self.displayText = displayText
+            self.links = links
+            self.imageAttachments = imageAttachments
+        }
+    }
+
     public static func attachmentCandidates(fromUserMarkdown markdown: String) -> [MessageAttachment] {
         imageTargets(in: markdown).enumerated().compactMap { index, target in
             guard let path = normaliseLocalHostPath(target) else { return nil }
             return imageAttachment(id: "markdown-image-\(index)", path: path)
         }
+    }
+
+    public static func attachmentCandidates(fromAssistantMarkdown markdown: String) -> [MessageAttachment] {
+        assistantPresentation(from: markdown).imageAttachments
     }
 
     public static func imageAttachment(id: String, path: String) -> MessageAttachment {
@@ -91,10 +107,6 @@ public enum MarkdownImageCompatibilityParser {
             displayName: displayName.isEmpty ? "图片" : displayName,
             source: .remoteHostPath(path)
         )
-    }
-
-    public static func attachmentCandidates(fromAssistantMarkdown _: String) -> [MessageAttachment] {
-        []
     }
 
     public static func displayTextWithoutImageMarkdown(_ markdown: String) -> String {
@@ -115,6 +127,42 @@ public enum MarkdownImageCompatibilityParser {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
+    }
+
+    public static func displayTextWithAssistantImageLinks(_ markdown: String) -> String {
+        displayTextWithAssistantLinks(markdown)
+    }
+
+    public static func displayTextWithAssistantLinks(_ markdown: String) -> String {
+        assistantPresentation(from: markdown).displayText
+    }
+
+    public static func assistantPresentation(from markdown: String) -> AssistantPresentation {
+        var display = ""
+        var index = markdown.startIndex
+        var links: [TranscriptLink] = []
+        var imageAttachments: [MessageAttachment] = []
+        while let link = nextImageOrMarkdownLink(in: markdown, startingAt: index) {
+            display.append(contentsOf: markdown[index..<link.fullRange.lowerBound])
+            let displayLabel = link.label.isEmpty ? "图片↗" : "\(link.label)↗"
+            var imageAttachmentID: String?
+            if let path = normaliseLocalHostPath(link.target),
+               RemoteImageContentPolicy.contentType(forPath: path) != nil {
+                let attachmentID = "assistant-image-\(imageAttachments.count)"
+                imageAttachments.append(imageAttachment(id: attachmentID, path: path))
+                imageAttachmentID = attachmentID
+            }
+            links.append(TranscriptLink(
+                id: "assistant-link-\(links.count)",
+                displayText: displayLabel,
+                target: link.target,
+                imageAttachmentID: imageAttachmentID
+            ))
+            display.append(displayLabel)
+            index = link.fullRange.upperBound
+        }
+        display.append(contentsOf: markdown[index...])
+        return AssistantPresentation(displayText: display, links: links, imageAttachments: imageAttachments)
     }
 
     public static func displayTextWithoutImagePlaceholders(_ text: String) -> String {
@@ -146,6 +194,54 @@ public enum MarkdownImageCompatibilityParser {
             index = markdown.index(after: closeIndex)
         }
         return targets
+    }
+
+    private static func nextMarkdownLink(
+        in markdown: String,
+        startingAt startIndex: String.Index
+    ) -> (fullRange: Range<String.Index>, label: String, target: String)? {
+        var index = startIndex
+        while let openRange = markdown[index...].range(of: "[") {
+            guard openRange.lowerBound == markdown.startIndex
+                    || markdown[markdown.index(before: openRange.lowerBound)] != "!" else {
+                index = openRange.upperBound
+                continue
+            }
+            guard let markerRange = markdown[openRange.upperBound...].range(of: "](") else {
+                return nil
+            }
+            guard let closeIndex = markdown[markerRange.upperBound...].firstIndex(of: ")") else {
+                return nil
+            }
+            let label = String(markdown[openRange.upperBound..<markerRange.lowerBound])
+            let target = String(markdown[markerRange.upperBound..<closeIndex])
+            return (openRange.lowerBound..<markdown.index(after: closeIndex), label, target)
+        }
+        return nil
+    }
+
+    private static func nextImageOrMarkdownLink(
+        in markdown: String,
+        startingAt startIndex: String.Index
+    ) -> (fullRange: Range<String.Index>, label: String, target: String)? {
+        if let image = nextImageMarkdownLink(in: markdown, startingAt: startIndex),
+           let regular = nextMarkdownLink(in: markdown, startingAt: startIndex) {
+            return image.fullRange.lowerBound <= regular.fullRange.lowerBound ? image : regular
+        }
+        return nextImageMarkdownLink(in: markdown, startingAt: startIndex)
+            ?? nextMarkdownLink(in: markdown, startingAt: startIndex)
+    }
+
+    private static func nextImageMarkdownLink(
+        in markdown: String,
+        startingAt startIndex: String.Index
+    ) -> (fullRange: Range<String.Index>, label: String, target: String)? {
+        guard let openRange = markdown[startIndex...].range(of: "![") else { return nil }
+        guard let markerRange = markdown[openRange.upperBound...].range(of: "](") else { return nil }
+        guard let closeIndex = markdown[markerRange.upperBound...].firstIndex(of: ")") else { return nil }
+        let label = String(markdown[openRange.upperBound..<markerRange.lowerBound])
+        let target = String(markdown[markerRange.upperBound..<closeIndex])
+        return (openRange.lowerBound..<markdown.index(after: closeIndex), label, target)
     }
 
     private static func normaliseLocalHostPath(_ rawTarget: String) -> String? {

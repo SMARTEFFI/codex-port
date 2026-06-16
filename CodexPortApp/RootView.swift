@@ -165,6 +165,7 @@ struct RootView: View {
             recentThreads: connection.recentThreads,
             emptyState: connection.connectedRoute?.isRelay == true && !connection.hasLoadedRelayThreadList ? .relayThreadListUnavailable : .directSSH,
             isLoadingWorkspaces: connection.isReloadingWorkspaces,
+            canStartProjectSessions: connection.connectedRoute?.canStartProjectSession == true,
             startingThreadCWDs: connection.startingThreadCWDs,
             onOpenSession: { thread in
                 connection.markThreadRead(thread.id)

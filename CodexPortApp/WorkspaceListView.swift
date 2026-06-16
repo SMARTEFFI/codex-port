@@ -9,6 +9,7 @@ struct WorkspaceListView: View {
     let recentThreads: [ThreadSummary]
     let emptyState: WorkspaceListEmptyState
     let isLoadingWorkspaces: Bool
+    let canStartProjectSessions: Bool
     let startingThreadCWDs: Set<String>
     let onOpenSession: (ThreadSummary) -> Void
     let onStartProjectSession: (WorkspaceProject) -> Void
@@ -31,6 +32,7 @@ struct WorkspaceListView: View {
         recentThreads: [ThreadSummary],
         emptyState: WorkspaceListEmptyState = .directSSH,
         isLoadingWorkspaces: Bool = false,
+        canStartProjectSessions: Bool = true,
         startingThreadCWDs: Set<String> = [],
         onOpenSession: @escaping (ThreadSummary) -> Void,
         onStartProjectSession: @escaping (WorkspaceProject) -> Void,
@@ -43,6 +45,7 @@ struct WorkspaceListView: View {
         self.recentThreads = recentThreads
         self.emptyState = emptyState
         self.isLoadingWorkspaces = isLoadingWorkspaces
+        self.canStartProjectSessions = canStartProjectSessions
         self.startingThreadCWDs = startingThreadCWDs
         self.onOpenSession = onOpenSession
         self.onStartProjectSession = onStartProjectSession
@@ -90,9 +93,9 @@ struct WorkspaceListView: View {
                                 onToggleCollapse: {
                                     toggleProjectCollapse(group.id)
                                 },
-                                onStartSession: {
+                                onStartSession: canStartProjectSessions ? {
                                     onStartProjectSession(group.project)
-                                }
+                                } : nil
                             )
                         }
                         .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
@@ -445,7 +448,7 @@ private struct WorkspaceProjectHeader: View {
     let isCollapsed: Bool
     let isStartingSession: Bool
     let onToggleCollapse: () -> Void
-    let onStartSession: () -> Void
+    let onStartSession: (() -> Void)?
 
     var body: some View {
         WorkspaceGroupHeader(
@@ -460,7 +463,7 @@ private struct WorkspaceProjectHeader: View {
             isCollapsed: isCollapsed,
             accessibilityName: "\(projectName) 分组",
             onToggleCollapse: onToggleCollapse,
-            trailingActionSystemImage: "square.and.pencil",
+            trailingActionSystemImage: onStartSession == nil ? nil : "square.and.pencil",
             trailingActionAccessibilityLabel: "在 \(projectName) 新建会话",
             isTrailingActionInProgress: isStartingSession,
             onTrailingAction: onStartSession
@@ -513,13 +516,13 @@ private struct WorkspaceGroupHeader: View {
                         } else {
                             Image(systemName: trailingActionSystemImage)
                                 .font(.callout.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.tint)
                         }
                     }
                     .frame(width: 32, height: 32)
                     .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .disabled(isTrailingActionInProgress)
                 .accessibilityLabel(trailingActionAccessibilityLabel ?? "新建会话")
                 .accessibilityValue(isTrailingActionInProgress ? "正在创建" : "")

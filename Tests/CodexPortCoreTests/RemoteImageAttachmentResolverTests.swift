@@ -58,21 +58,25 @@ import Testing
     #expect(unauthorized.source == .unavailable(reason: "当前 Pairing 无权读取远端图片"))
 }
 
-@Test func markdownCompatibilityDoesNotAutoReadAssistantMarkdownPaths() async {
+@Test func markdownCompatibilityLimitsAssistantMarkdownCandidatesToImages() async {
     let reader = RecordingRemoteImageReader(result: .failure(.unauthorized))
     let resolver = RemoteImageAttachmentResolver(reader: reader, cache: InMemoryRemoteImageCache(), maxBytes: 10)
 
     let candidates = MarkdownImageCompatibilityParser.attachmentCandidates(
         fromUserMarkdown: #"![s](/Users/chenm/Desktop/screen.png)"#
     )
-    let assistantCandidates = MarkdownImageCompatibilityParser.attachmentCandidates(
+    let assistantImageCandidates = MarkdownImageCompatibilityParser.attachmentCandidates(
         fromAssistantMarkdown: #"![s](/Users/chenm/Desktop/screen.png)"#
+    )
+    let assistantLinkCandidates = MarkdownImageCompatibilityParser.attachmentCandidates(
+        fromAssistantMarkdown: #"[report](/Users/chenm/Desktop/report.html)"#
     )
 
     _ = await resolver.resolve(candidates[0])
 
     #expect(candidates.first?.source == .remoteHostPath("/Users/chenm/Desktop/screen.png"))
-    #expect(assistantCandidates.isEmpty)
+    #expect(assistantImageCandidates.first?.source == .remoteHostPath("/Users/chenm/Desktop/screen.png"))
+    #expect(assistantLinkCandidates.isEmpty)
     #expect(reader.requestedPaths == ["/Users/chenm/Desktop/screen.png"])
 }
 

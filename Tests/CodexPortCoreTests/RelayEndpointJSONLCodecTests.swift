@@ -99,6 +99,30 @@ import Testing
     #expect(!decoded.telemetryDescription.contains("real Codex session preview"))
 }
 
+@Test func relayEndpointJSONLCodecRoundTripsThreadStartedWithoutLeakingPreviewTelemetry() throws {
+    let thread = RelayThreadSummarySnapshot(
+        id: "new-thread",
+        cwd: "/Users/chenm/Projects/codex-port",
+        updatedAtUnixTime: 1_800_000_000,
+        preview: "new session preview",
+        gitRepository: nil,
+        gitBranch: nil,
+        status: "completed"
+    )
+
+    let line = try RelayEndpointJSONLCodec.encodeThreadStarted(
+        thread,
+        clientID: "iphone-a",
+        requestID: "start-1"
+    )
+    let decoded = try RelayEndpointJSONLCodec.decodeLine(line)
+
+    #expect(decoded == .threadStarted(clientID: "iphone-a", requestID: "start-1", thread: thread))
+    #expect(decoded.telemetryDescription.contains("threadStarted"))
+    #expect(decoded.telemetryDescription.contains("thread=new-thread"))
+    #expect(!decoded.telemetryDescription.contains("new session preview"))
+}
+
 @Test func relayEndpointJSONLCodecRoundTripsThreadHistoryWithoutLeakingTextTelemetry() throws {
     let message = try RelayEndpointJSONLCodec.decodeLine(RelayEndpointJSONLCodec.encodeEvent(
         .threadHistoryLoaded(

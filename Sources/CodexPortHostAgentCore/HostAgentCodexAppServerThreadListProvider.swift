@@ -11,6 +11,10 @@ public extension HostAgentThreadListProviding {
     }
 }
 
+public protocol HostAgentThreadStarting: Sendable {
+    func startThread(cwd: String) async throws -> RelayThreadSummarySnapshot
+}
+
 public protocol HostAgentThreadHistoryProviding: Sendable {
     func history(threadID: String) async throws -> RelayThreadHistorySnapshot
     func historyPage(threadID: String, limit: Int, cursor: String?) async throws -> RelayThreadHistoryPage
@@ -106,6 +110,13 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         }
     }
 
+    public func startThread(cwd: String) async throws -> RelayThreadSummarySnapshot {
+        let runner = HostAgentCodexAppServerJSONRPCProcess(command: command)
+        return try await runner.withProcess(timeout: timeout) { transport in
+            try await Self.startThreadSnapshot(cwd: cwd, transport: transport, timeout: timeout)
+        }
+    }
+
     static func loadHistorySnapshot(
         threadID: String,
         transport: HostAgentAppServerJSONRPCTransporting,
@@ -133,6 +144,30 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
             timeout: timeout
         )
         return Self.historySnapshot(from: response, fallbackThreadID: threadID)
+    }
+
+    static func startThreadSnapshot(
+        cwd: String,
+        transport: HostAgentAppServerJSONRPCTransporting,
+        timeout: Duration
+    ) async throws -> RelayThreadSummarySnapshot {
+        _ = try await transport.request(
+            id: 1,
+            method: "initialize",
+            params: Self.initializeParams(),
+            timeout: timeout
+        )
+        try transport.sendNotification(method: "initialized", params: [:])
+        let response = try await transport.request(
+            id: 2,
+            method: "thread/start",
+            params: [
+                "cwd": cwd,
+                "model": "gpt-5.5",
+            ],
+            timeout: timeout
+        )
+        return try Self.startedThreadSnapshot(from: response, fallbackCWD: cwd)
     }
 
     static func loadHistoryPage(
@@ -206,6 +241,32 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         return RelayThreadListResponse(
             threads: threadObjects.compactMap(snapshot(from:)),
             nextCursor: result?["nextCursor"] as? String ?? response["nextCursor"] as? String
+        )
+    }
+
+    private static func startedThreadSnapshot(from response: [String: Any], fallbackCWD: String) throws -> RelayThreadSummarySnapshot {
+        let result = response["result"] as? [String: Any] ?? response
+        let thread = result["thread"] as? [String: Any] ?? result
+        let threadID = string("id", in: thread)
+            ?? string("threadId", in: thread)
+            ?? string("sessionId", in: thread)
+            ?? string("threadID", in: thread)
+        guard let threadID, !threadID.isEmpty else {
+            throw HostAgentThreadListProviderError.missingResponse(method: "thread/start")
+        }
+        let git = thread["gitInfo"] as? [String: Any] ?? thread["git"] as? [String: Any]
+        let updatedAt = unixTime(from: thread["updatedAt"] ?? thread["updated_at"])
+        return RelayThreadSummarySnapshot(
+            id: threadID,
+            cwd: string("cwd", in: thread) ?? fallbackCWD,
+            updatedAtUnixTime: updatedAt == 0 ? Date().timeIntervalSince1970 : updatedAt,
+            preview: string("preview", in: thread)
+                ?? string("name", in: thread)
+                ?? string("title", in: thread)
+                ?? "新会话",
+            gitRepository: git.flatMap { string("repository", in: $0) ?? string("repo", in: $0) ?? string("originUrl", in: $0) },
+            gitBranch: git.flatMap { string("branch", in: $0) },
+            status: status(from: thread["status"] ?? thread["state"])
         )
     }
 
@@ -613,6 +674,8 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         }
     }
 }
+
+extension HostAgentCodexAppServerThreadListProvider: HostAgentThreadStarting {}
 
 private final class HostAgentCodexAppServerJSONRPCProcess: @unchecked Sendable {
     private let command: HostAgentProcessCommand

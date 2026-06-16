@@ -455,12 +455,15 @@ final class AppConnectionState: ObservableObject {
     }
 
     func startThread(cwd: String) async -> String? {
-        guard let session else { return nil }
         guard !startingThreadCWDs.contains(cwd) else { return nil }
         startingThreadCWDs.insert(cwd)
         defer {
             startingThreadCWDs.remove(cwd)
         }
+        if connectedRoute?.isRelay == true {
+            return await startRelayThread(cwd: cwd)
+        }
+        guard let session else { return nil }
         do {
             let threadID = try await RemoteFileBrowser(
                 protocolClient: session.protocolClient,
@@ -473,6 +476,34 @@ final class AppConnectionState: ObservableObject {
             return threadID
         } catch {
             errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
+    private func startRelayThread(cwd: String) async -> String? {
+        guard let connectedRoute,
+              let relayRegistry = connectedRoute.relaySessionRegistry
+        else { return nil }
+        let anchorThreadID = recentThreads.first?.id
+        guard let anchorThreadID,
+              let context = relayRegistry.context(threadID: anchorThreadID)
+        else {
+            errorMessage = "当前 HostAgent 会话列表为空，暂时无法从项目分组新建会话。请先在 Mac 上创建一个 Codex 会话后刷新列表。"
+            return nil
+        }
+        do {
+            let snapshot = try await context.clientManager.startThread(cwd: cwd)
+            let summary = ThreadSummary(relaySnapshot: snapshot)
+            self.connectedRoute = connectedRoute.appendingRelayThread(summary)
+            let index = WorkspaceIndex(threads: self.connectedRoute?.relayThreadSummaries ?? recentThreads)
+            projects = index.projects()
+            projectThreadGroups = index.projectThreadGroups(limit: 5)
+            dayThreadGroups = AppConnectionState.dayThreadGroups(for: index.recentThreads())
+            recentThreads = index.recentThreads()
+            errorMessage = nil
+            return snapshot.id
+        } catch {
+            errorMessage = connectionErrorMessage(for: error)
             return nil
         }
     }

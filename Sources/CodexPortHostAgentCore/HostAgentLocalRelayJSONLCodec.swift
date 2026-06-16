@@ -3,6 +3,7 @@ import CodexPortShared
 
 public enum HostAgentLocalRelayJSONLCommand: Equatable, Sendable {
     case listThreads(clientID: String, requestID: String, limit: Int, cursor: String?)
+    case startThread(clientID: String, requestID: String, cwd: String)
     case loadHistory(clientID: String, requestID: String, threadID: String, limit: Int, cursor: String?)
     case readFile(clientID: String, requestID: String, path: String, maxBytes: Int)
     case createDirectory(clientID: String, requestID: String, path: String, recursive: Bool)
@@ -34,6 +35,12 @@ public enum HostAgentLocalRelayJSONLCodec {
                 requestID: try string("requestID", in: object),
                 limit: int("limit", in: object) ?? 100,
                 cursor: object["cursor"] as? String
+            )
+        case "startThread":
+            return .startThread(
+                clientID: try string("clientID", in: object),
+                requestID: try string("requestID", in: object),
+                cwd: try string("cwd", in: object)
             )
         case "loadHistory":
             return .loadHistory(
@@ -144,6 +151,14 @@ public enum HostAgentLocalRelayJSONLCodec {
         nextCursor: String? = nil
     ) throws -> String {
         try RelayEndpointJSONLCodec.encodeThreadList(threads, clientID: clientID, requestID: requestID, nextCursor: nextCursor)
+    }
+
+    public static func encodeThreadStarted(
+        _ thread: RelayThreadSummarySnapshot,
+        clientID: String,
+        requestID: String
+    ) throws -> String {
+        try RelayEndpointJSONLCodec.encodeThreadStarted(thread, clientID: clientID, requestID: requestID)
     }
 
     public static func encodeThreadHistoryPage(_ page: RelayThreadHistoryPage, clientID: String) throws -> String {
@@ -276,6 +291,8 @@ public extension HostAgentLocalRelayJSONLCommand {
         switch self {
         case let .listThreads(clientID, _, _, _):
             HostAgentLocalRelayCommandDiagnosticSummary(type: "listThreads", clientID: clientID, inputBytes: inputBytes)
+        case let .startThread(clientID, _, _):
+            HostAgentLocalRelayCommandDiagnosticSummary(type: "startThread", clientID: clientID, inputBytes: inputBytes)
         case let .loadHistory(clientID, _, threadID, _, _):
             HostAgentLocalRelayCommandDiagnosticSummary(type: "loadHistory", clientID: clientID, threadID: threadID, inputBytes: inputBytes)
         case let .readFile(clientID, _, _, _):
