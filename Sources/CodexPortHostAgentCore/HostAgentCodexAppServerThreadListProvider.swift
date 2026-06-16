@@ -304,7 +304,9 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
             ?? object["delta"] as? String
         switch type {
         case "userMessage", "user_message", "userInput":
-            return text.map(RelayThreadHistoryItem.userMessage)
+            guard let text else { return nil }
+            let imagePaths = localImagePaths(from: object)
+            return imagePaths.isEmpty ? .userMessage(text) : .structuredUserMessage(text: text, imagePaths: imagePaths)
         case "assistantMessage", "assistant_message", "agentMessage", "message", "plan", "reasoning":
             return text.map(RelayThreadHistoryItem.assistantMessage)
         case "commandOutput", "command_output", "commandExecutionOutput":
@@ -353,6 +355,32 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
 
     private static func textContent(from content: [[String: Any]]?) -> String? {
         content?.compactMap { $0["text"] as? String }.joined()
+    }
+
+    private static func localImagePaths(from object: [String: Any]) -> [String] {
+        if let paths = object["local_images"] as? [String] {
+            return paths
+        }
+        if let paths = object["localImages"] as? [String] {
+            return paths
+        }
+        guard let content = object["content"] as? [[String: Any]] else {
+            return []
+        }
+        return content.compactMap { item in
+            guard (item["type"] as? String) == "input_image" else { return nil }
+            let path = item["path"] as? String
+                ?? item["image_path"] as? String
+                ?? item["imagePath"] as? String
+            if let path {
+                return path
+            }
+            guard let imageURL = item["image_url"] as? String,
+                  imageURL.lowercased().hasPrefix("file://"),
+                  let url = URL(string: imageURL)
+            else { return nil }
+            return url.path
+        }
     }
 
     private static func commandOutputText(from result: Any?) -> String? {
@@ -505,7 +533,7 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
             return .commandOutput(commandOutputSummary(text))
         case let .fileChange(path, diff):
             return .fileChange(path: path, diff: cappedText(diff, maxBytes: maxFileChangeBytes, label: "diff"))
-        case .userMessage, .assistantMessage:
+        case .userMessage, .structuredUserMessage, .assistantMessage:
             return item
         }
     }
@@ -557,6 +585,8 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         switch item {
         case let .userMessage(text), let .assistantMessage(text), let .commandOutput(text):
             return text.utf8.count
+        case let .structuredUserMessage(text, imagePaths):
+            return text.utf8.count + imagePaths.reduce(0) { $0 + $1.utf8.count }
         case let .fileChange(path, diff):
             return path.utf8.count + diff.utf8.count
         }

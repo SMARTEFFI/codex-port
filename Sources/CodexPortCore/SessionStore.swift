@@ -673,6 +673,8 @@ extension VisibleItem {
         switch item {
         case let .userMessage(text):
             self = .userMessageFromCompatibilityText(text)
+        case let .structuredUserMessage(text, imagePaths):
+            self = .structuredUserMessageFromHistory(text: text, imagePaths: imagePaths)
         case let .assistantMessage(text):
             self = .assistantMessage(text)
         case let .commandOutput(text):
@@ -745,6 +747,16 @@ extension VisibleItem {
         }
         return .structuredUserMessage(StructuredUserMessage(
             body: MarkdownImageCompatibilityParser.displayTextWithoutImageMarkdown(text),
+            attachments: attachments
+        ))
+    }
+
+    fileprivate static func structuredUserMessageFromHistory(text: String, imagePaths: [String]) -> VisibleItem {
+        let attachments = imagePaths.enumerated().map { index, path in
+            MarkdownImageCompatibilityParser.imageAttachment(id: "history-image-\(index)", path: path)
+        }
+        return .structuredUserMessage(StructuredUserMessage(
+            body: MarkdownImageCompatibilityParser.displayTextWithoutImagePlaceholders(text),
             attachments: attachments
         ))
     }

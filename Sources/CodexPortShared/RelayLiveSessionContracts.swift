@@ -59,6 +59,7 @@ public enum RelayThreadRunStatus: String, Codable, Equatable, Sendable {
 
 public enum RelayThreadHistoryItem: Codable, Equatable, Sendable {
     case userMessage(String)
+    case structuredUserMessage(text: String, imagePaths: [String])
     case assistantMessage(String)
     case commandOutput(String)
     case fileChange(path: String, diff: String)
@@ -66,6 +67,7 @@ public enum RelayThreadHistoryItem: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case type
         case text
+        case imagePaths
         case path
         case diff
     }
@@ -74,7 +76,13 @@ public enum RelayThreadHistoryItem: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(String.self, forKey: .type) {
         case "userMessage":
-            self = .userMessage(try container.decode(String.self, forKey: .text))
+            let text = try container.decode(String.self, forKey: .text)
+            let imagePaths = try container.decodeIfPresent([String].self, forKey: .imagePaths) ?? []
+            if imagePaths.isEmpty {
+                self = .userMessage(text)
+            } else {
+                self = .structuredUserMessage(text: text, imagePaths: imagePaths)
+            }
         case "assistantMessage":
             self = .assistantMessage(try container.decode(String.self, forKey: .text))
         case "commandOutput":
@@ -99,6 +107,10 @@ public enum RelayThreadHistoryItem: Codable, Equatable, Sendable {
         case let .userMessage(text):
             try container.encode("userMessage", forKey: .type)
             try container.encode(text, forKey: .text)
+        case let .structuredUserMessage(text, imagePaths):
+            try container.encode("userMessage", forKey: .type)
+            try container.encode(text, forKey: .text)
+            try container.encode(imagePaths, forKey: .imagePaths)
         case let .assistantMessage(text):
             try container.encode("assistantMessage", forKey: .type)
             try container.encode(text, forKey: .text)

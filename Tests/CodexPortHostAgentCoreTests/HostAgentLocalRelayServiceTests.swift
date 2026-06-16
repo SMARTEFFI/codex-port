@@ -339,6 +339,42 @@ import Testing
     #expect(snapshot.items.last == .assistantMessage("助手回答"))
 }
 
+@Test func hostAgentCodexAppServerThreadHistoryProviderPreservesUserMessageLocalImages() throws {
+    let snapshot = HostAgentCodexAppServerThreadListProvider.historySnapshot(
+        from: [
+            "thread": [
+                "id": "thread-1",
+                "turns": [
+                    [
+                        "status": "completed",
+                        "items": [
+                            [
+                                "type": "userMessage",
+                                "message": "[Image #1] [Image #2]  基于这2个方向继续深化",
+                                "local_images": [
+                                    "/var/folders/d4/T/codex-clipboard-a.png",
+                                    "/var/folders/d4/T/codex-clipboard-b.png",
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ],
+        fallbackThreadID: "thread-1"
+    )
+
+    #expect(snapshot.items == [
+        .structuredUserMessage(
+            text: "[Image #1] [Image #2]  基于这2个方向继续深化",
+            imagePaths: [
+                "/var/folders/d4/T/codex-clipboard-a.png",
+                "/var/folders/d4/T/codex-clipboard-b.png",
+            ]
+        ),
+    ])
+}
+
 @Test func hostAgentCodexAppServerThreadHistoryProviderKeepsEncodedHistoryUnderRelayFrameBudget() throws {
     let noisyHistory = (0..<80).flatMap { index -> [[String: Any]] in
         [

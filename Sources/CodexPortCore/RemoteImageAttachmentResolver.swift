@@ -79,14 +79,18 @@ public enum MarkdownImageCompatibilityParser {
     public static func attachmentCandidates(fromUserMarkdown markdown: String) -> [MessageAttachment] {
         imageTargets(in: markdown).enumerated().compactMap { index, target in
             guard let path = normaliseLocalHostPath(target) else { return nil }
-            let displayName = URL(fileURLWithPath: path).lastPathComponent
-            return MessageAttachment(
-                id: "markdown-image-\(index)",
-                kind: .image(contentType: RemoteImageContentPolicy.contentType(forPath: path), detail: nil),
-                displayName: displayName.isEmpty ? "图片" : displayName,
-                source: .remoteHostPath(path)
-            )
+            return imageAttachment(id: "markdown-image-\(index)", path: path)
         }
+    }
+
+    public static func imageAttachment(id: String, path: String) -> MessageAttachment {
+        let displayName = URL(fileURLWithPath: path).lastPathComponent
+        return MessageAttachment(
+            id: id,
+            kind: .image(contentType: RemoteImageContentPolicy.contentType(forPath: path), detail: nil),
+            displayName: displayName.isEmpty ? "图片" : displayName,
+            source: .remoteHostPath(path)
+        )
     }
 
     public static func attachmentCandidates(fromAssistantMarkdown _: String) -> [MessageAttachment] {
@@ -107,6 +111,21 @@ public enum MarkdownImageCompatibilityParser {
         }
         display.append(contentsOf: markdown[index...])
         return display
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    public static func displayTextWithoutImagePlaceholders(_ text: String) -> String {
+        var result = text
+        while let openRange = result.range(of: "[Image #") {
+            guard let closeIndex = result[openRange.upperBound...].firstIndex(of: "]") else {
+                break
+            }
+            result.removeSubrange(openRange.lowerBound...closeIndex)
+        }
+        return result
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }

@@ -569,6 +569,61 @@ import Testing
     ])
 }
 
+@Test func sessionStoreMapsStructuredHistoryImagePathsToUserMessageAttachments() async throws {
+    let protocolClient = FakeCodexProtocol()
+    let store = SessionStore(protocolClient: protocolClient)
+    store.openNew(threadID: "thread-1")
+    let firstImagePath = "/var/folders/d4/T/codex-clipboard-a.png"
+    let secondImagePath = "/var/folders/d4/T/codex-clipboard-b.jpg"
+
+    store.receive(relayHistoryPage: RelayThreadHistoryPage(
+        requestID: "initial",
+        threadID: "thread-1",
+        items: [
+            .structuredUserMessage(
+                text: "[Image #1] [Image #2]  基于这2个方向继续深化",
+                imagePaths: [firstImagePath, secondImagePath]
+            )
+        ],
+        status: .completed,
+        nextCursor: nil
+    ))
+
+    let expected = StructuredUserMessage(
+        body: "基于这2个方向继续深化",
+        attachments: [
+            MessageAttachment(
+                id: "history-image-0",
+                kind: .image(contentType: "image/png", detail: nil),
+                displayName: "codex-clipboard-a.png",
+                source: .remoteHostPath(firstImagePath)
+            ),
+            MessageAttachment(
+                id: "history-image-1",
+                kind: .image(contentType: "image/jpeg", detail: nil),
+                displayName: "codex-clipboard-b.jpg",
+                source: .remoteHostPath(secondImagePath)
+            ),
+        ]
+    )
+    #expect(store.visibleItems == [.structuredUserMessage(expected)])
+
+    let rows = TranscriptPresentation.rows(for: store.visibleItems)
+    #expect(rows.first?.body == "基于这2个方向继续深化")
+    #expect(rows.first?.imageAttachments == [
+        ImageAttachmentGalleryItem(
+            id: "history-image-0",
+            displayName: "codex-clipboard-a.png",
+            availability: .remote(path: firstImagePath)
+        ),
+        ImageAttachmentGalleryItem(
+            id: "history-image-1",
+            displayName: "codex-clipboard-b.jpg",
+            availability: .remote(path: secondImagePath)
+        ),
+    ])
+}
+
 @Test func sessionStoreMergesStreamedEventsAndInterruptsRunningTurn() async throws {
     let protocolClient = FakeCodexProtocol()
     let store = SessionStore(protocolClient: protocolClient)

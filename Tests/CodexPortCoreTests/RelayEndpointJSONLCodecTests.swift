@@ -124,6 +124,35 @@ import Testing
     #expect(!message.telemetryDescription.contains("secret desktop answer"))
 }
 
+@Test func relayEndpointJSONLCodecRoundTripsStructuredHistoryImagesWithoutLeakingTextTelemetry() throws {
+    let message = try RelayEndpointJSONLCodec.decodeLine(RelayEndpointJSONLCodec.encodeEvent(
+        .threadHistoryLoaded(
+            threadID: "thread-1",
+            items: [
+                .structuredUserMessage(
+                    text: "[Image #1]  secret image prompt",
+                    imagePaths: ["/var/folders/d4/T/codex-clipboard-a.png"]
+                ),
+            ],
+            status: .completed
+        ),
+        clientID: "iphone-a"
+    ))
+
+    #expect(message == .event(clientID: "iphone-a", .threadHistoryLoaded(
+        threadID: "thread-1",
+        items: [
+            .structuredUserMessage(
+                text: "[Image #1]  secret image prompt",
+                imagePaths: ["/var/folders/d4/T/codex-clipboard-a.png"]
+            ),
+        ],
+        status: .completed
+    )))
+    #expect(!message.telemetryDescription.contains("secret image prompt"))
+    #expect(!message.telemetryDescription.contains("codex-clipboard-a.png"))
+}
+
 @Test func relayEndpointJSONLCodecRoundTripsThreadHistoryPageWithoutLeakingTextTelemetry() throws {
     let page = RelayThreadHistoryPage(
         requestID: "history-request-1",
