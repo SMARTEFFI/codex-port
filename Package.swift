@@ -82,6 +82,7 @@ let package = Package(
             name: "CodexPortRelayCore",
             dependencies: [
                 "CodexPortShared",
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),

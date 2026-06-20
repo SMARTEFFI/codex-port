@@ -175,7 +175,11 @@ struct SessionDetailView: View {
         .task {
             guard timeline.items.isEmpty else { return }
             if let route, route.isRelay {
-                guard let context = route.relaySessionContext(threadID: threadID) else {
+                let attachOptions = RelaySessionContext.AttachOptions(
+                    loadInitialHistory: !isNewThread,
+                    resumeLiveSession: !isNewThread
+                )
+                guard let context = route.relaySessionContext(threadID: threadID, options: attachOptions) else {
                     isLoadingHistory = false
                     errorMessage = "Relay 会话尚未在当前 Host 列表中。请返回工作区刷新会话列表后重试。"
                     return
@@ -184,14 +188,25 @@ struct SessionDetailView: View {
                 let manager = context.clientManager
                 sessionStore = store
                 relaySessionClientManager = manager
+                if isNewThread {
+                    store.openNew(threadID: threadID)
+                    composer.isRunning = false
+                }
                 if !store.visibleItems.isEmpty {
                     isLoadingHistory = false
                     updateTimeline(store.visibleItems, source: .initialLoad)
-                } else {
+                } else if !isNewThread {
                     isLoadingHistory = true
+                } else {
+                    isLoadingHistory = false
+                    updateTimeline([], source: .initialLoad)
                 }
                 do {
-                    _ = try await manager.attach()
+                    _ = try await manager.attach(
+                        waitForInitialHistory: !isNewThread,
+                        timeout: .seconds(20)
+                    )
+                    refreshRelayTimeline(store: store, source: .initialLoad)
                     startRelayTimelinePolling(store: store)
                     await sendRelayAutopromptIfNeeded(using: manager)
                 } catch RelayJSONLSessionClientManagerError.clientUnavailable {
@@ -293,6 +308,13 @@ struct SessionDetailView: View {
         }
         .onChange(of: foregroundRefreshSignal) { _, _ in
             Task {
+                if let relaySessionClientManager {
+                    do {
+                        try await relaySessionClientManager.recoverAfterForeground()
+                    } catch {
+                        errorMessage = sessionErrorMessage(for: error)
+                    }
+                }
                 await refreshCurrentThreadFromServer(surfaceError: true)
             }
         }
@@ -533,22 +555,27 @@ struct SessionDetailView: View {
     private func startRelayTimelinePolling(store: SessionStore) {
         relayTimelinePollingTask?.cancel()
         relayTimelinePollingTask = Task {
-            var previousItems = store.visibleItems
-            var previousStatus = store.status
+            var previousItems = timeline.items
+            var previousStatus = sessionStore?.status
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: liveTimelineRefreshIntervalNanos)
                 guard !Task.isCancelled else { return }
                 if store.visibleItems != previousItems || store.status != previousStatus {
                     previousItems = store.visibleItems
                     previousStatus = store.status
-                    if !store.visibleItems.isEmpty || store.status != .running {
-                        isLoadingHistory = false
-                    }
-                    updateTimeline(store.visibleItems, source: .liveUpdate)
-                    composer.isRunning = store.status == .running
+                    refreshRelayTimeline(store: store, source: .liveUpdate)
                 }
             }
         }
+    }
+
+    @MainActor
+    private func refreshRelayTimeline(store: SessionStore, source: TimelineUpdateSource) {
+        if !store.visibleItems.isEmpty || store.status != .running {
+            isLoadingHistory = false
+        }
+        updateTimeline(store.visibleItems, source: source)
+        composer.isRunning = store.status == .running
     }
 
     @MainActor
@@ -780,8 +807,12 @@ struct SessionDetailView: View {
         }
         if let relayError = error as? RelayJSONLSessionClientError {
             switch relayError {
+            case .initialHistoryTimedOut:
+                return "加载会话历史超过 20 秒未响应。请确认 Mac 端 HostAgent 在线，稍后重新进入会话。"
             case .timedOut:
                 return "发送后未收到 HostAgent 写入确认。请确认 HostAgent 菜单应用在线，重新进入会话后再试。"
+            case .transportClosed:
+                return "Relay 连接已关闭，正在尝试自动重连。请稍后重试。"
             case let .hostAgentError(reason):
                 return "HostAgent 返回错误：\(reason)"
             case let .writeFailed(reason):

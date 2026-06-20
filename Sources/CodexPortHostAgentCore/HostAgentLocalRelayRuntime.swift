@@ -6,12 +6,23 @@ public struct HostAgentLocalRelayAttachRequest: Equatable, Sendable {
     public var threadID: String
     public var turnID: String
     public var cwd: String?
+    public var loadInitialHistory: Bool
+    public var resumeLiveSession: Bool
 
-    public init(sessionID: String, threadID: String, turnID: String, cwd: String? = nil) {
+    public init(
+        sessionID: String,
+        threadID: String,
+        turnID: String,
+        cwd: String? = nil,
+        loadInitialHistory: Bool = true,
+        resumeLiveSession: Bool = true
+    ) {
         self.sessionID = sessionID
         self.threadID = threadID
         self.turnID = turnID
         self.cwd = cwd
+        self.loadInitialHistory = loadInitialHistory
+        self.resumeLiveSession = resumeLiveSession
     }
 }
 
@@ -22,13 +33,39 @@ public actor HostAgentLocalRelayRuntime {
     private final class SessionEntry: @unchecked Sendable {
         let request: HostAgentLocalRelayAttachRequest
         let bridge: HostAgentLiveSessionBridge<AnyHostAgentLiveSessionAdapter>
+        private let lock = NSLock()
+        private var writeStatuses: [String: RelayWriteStatus] = [:]
+        private var isLiveStarted: Bool
 
         init(
             request: HostAgentLocalRelayAttachRequest,
-            bridge: HostAgentLiveSessionBridge<AnyHostAgentLiveSessionAdapter>
+            bridge: HostAgentLiveSessionBridge<AnyHostAgentLiveSessionAdapter>,
+            isLiveStarted: Bool
         ) {
             self.request = request
             self.bridge = bridge
+            self.isLiveStarted = isLiveStarted
+        }
+
+        func knownStatus(for writeID: String) -> RelayWriteStatus? {
+            lock.withLock {
+                writeStatuses[writeID]
+            }
+        }
+
+        func recordStatus(_ status: RelayWriteStatus, for writeID: String) {
+            lock.withLock {
+                writeStatuses[writeID] = status
+            }
+        }
+
+        func shouldStartLive(for write: RelayLiveSessionWrite) -> Bool {
+            lock.withLock {
+                guard !isLiveStarted else { return false }
+                guard case .prompt = write else { return false }
+                isLiveStarted = true
+                return true
+            }
         }
     }
 
@@ -74,7 +111,21 @@ public actor HostAgentLocalRelayRuntime {
         guard let entry = sessions[sessionID] else {
             return .failed(reason: "Relay session is not running.")
         }
-        return await entry.bridge.enqueue(write)
+        if let knownStatus = entry.knownStatus(for: write.writeID) {
+            return knownStatus
+        }
+        if entry.shouldStartLive(for: write) {
+            do {
+                try entry.bridge.start()
+            } catch {
+                let status = RelayWriteStatus.failed(reason: String(describing: error))
+                entry.recordStatus(status, for: write.writeID)
+                return status
+            }
+        }
+        let status = await entry.bridge.enqueue(write)
+        entry.recordStatus(status, for: write.writeID)
+        return status
     }
 
     public func detach(clientID: String, sessionID: String) {
@@ -108,9 +159,12 @@ public actor HostAgentLocalRelayRuntime {
 
         let adapter = adapterFactory(request)
         let bridge = HostAgentLiveSessionBridge(adapter: adapter)
-        let entry = SessionEntry(request: request, bridge: bridge)
+        let startsImmediately = request.resumeLiveSession
+        let entry = SessionEntry(request: request, bridge: bridge, isLiveStarted: startsImmediately)
         sessions[request.sessionID] = entry
-        try bridge.start()
+        if startsImmediately {
+            try bridge.start()
+        }
         return entry
     }
 }

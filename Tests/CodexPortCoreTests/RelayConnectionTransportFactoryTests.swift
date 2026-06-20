@@ -145,6 +145,17 @@ import Testing
     #expect(RelayConnectionTransportMode.parse(environmentValue: " WebRTC-DataChannel ") == .p2pWebRTCDataChannel)
 }
 
+@Test func relayConnectionTransportFactoryDerivesDefaultSTUNFromRelayBaseURL() {
+    let factory = RelayConnectionTransportFactory(
+        mode: .p2pWebRTCDataChannel,
+        relayBaseURL: URL(string: "https://relay.example.test")!
+    )
+
+    #expect(factory.webRTCConfigurationForTesting.iceServers == [
+        WebRTCICEServerConfiguration(urls: ["stun:relay.example.test:3478"]),
+    ])
+}
+
 private final class RelayP2PSignalingHTTPClientForConnectionFactory: RelayP2PSignalingHTTPClient, @unchecked Sendable {
     let presenceResponse: RelayP2PPresenceResponse
     let openResponse: RelayP2POpenSessionResponse
@@ -166,6 +177,16 @@ private final class RelayP2PSignalingHTTPClientForConnectionFactory: RelayP2PSig
         at url: URL
     ) async throws -> RelayP2POpenSessionResponse {
         openResponse
+    }
+
+    func getICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest,
+        at url: URL
+    ) async throws -> RelayP2PICEConfigurationResponse {
+        RelayP2PICEConfigurationResponse(
+            configuration: WebRTCRuntimeConfiguration(iceServers: []),
+            expiresAtUnixTime: 0
+        )
     }
 
     func sendMessage(_ request: RelayP2PSendMessageRequest, at url: URL) async throws {}

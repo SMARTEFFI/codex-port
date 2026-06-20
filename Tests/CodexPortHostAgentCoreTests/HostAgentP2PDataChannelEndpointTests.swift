@@ -162,6 +162,30 @@ import Testing
     #expect(!line.contains("not-json"))
 }
 
+@Test func hostAgentP2PDataChannelEndpointRepliesToHealthPingWithoutCommandHandling() async throws {
+    let diagnostics = HostAgentP2PDataChannelEndpointDiagnostics()
+    let service = HostAgentLocalRelayService(
+        commandFactory: { _ in HostAgentProcessCommand(executablePath: "/bin/false") }
+    )
+    let dataChannel = RecordingHostAgentP2PDataChannelTransport()
+    let endpoint = HostAgentP2PDataChannelEndpoint(
+        dataChannel: dataChannel,
+        service: service,
+        onEvent: { event in
+            await diagnostics.record(event)
+        }
+    )
+    endpoint.start()
+
+    await dataChannel.deliver(Data((try WebRTCDataChannelHealthCheck.pingLine(nonce: "probe-1") + "\n").utf8))
+
+    let line = try await dataChannel.waitForSentLine(containing: WebRTCDataChannelHealthCheck.pongType)
+    endpoint.stop()
+
+    #expect(WebRTCDataChannelHealthCheck.decodeLine(line) == .pong(nonce: "probe-1"))
+    #expect(await diagnostics.events.isEmpty)
+}
+
 private struct P2PStubHostAgentThreadListProvider: HostAgentThreadListProviding {
     var threads: [RelayThreadSummarySnapshot]
 

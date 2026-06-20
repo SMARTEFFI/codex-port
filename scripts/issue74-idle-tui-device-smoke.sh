@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+source "$ROOT_DIR/scripts/lib/host-name.sh"
+
 if [[ $# -lt 3 || $# -gt 4 ]]; then
   cat >&2 <<'USAGE'
 Usage:
@@ -44,7 +46,7 @@ PHYSICAL_IPHONE_B_DEVICE_ID="$3"
 MARKER="${4:-ISSUE74-PHYSICAL-IDLE-TUI-$(date +%Y%m%d%H%M%S)}"
 
 HOST_ID="${CODEXPORT_RELAY_HOST_ID:-11111111-2222-3333-4444-555555555555}"
-HOST_NAME="${CODEXPORT_RELAY_HOST_NAME:-CodexPort Dev Mac}"
+HOST_NAME="${CODEXPORT_RELAY_HOST_NAME:-$(codexport_default_host_name)}"
 HOST_USER="${CODEXPORT_RELAY_HOST_USER:-${USER}}"
 RELAY_BASE_URL="${CODEXPORT_RELAY_BASE_URL:-https://codexport.smarteffi.net}"
 RELAY_ENDPOINT_URL="${CODEXPORT_IOS_RELAY_ENDPOINT_URL:-wss://codexport.smarteffi.net/v0/streams}"

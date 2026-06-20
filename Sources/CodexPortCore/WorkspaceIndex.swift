@@ -268,6 +268,7 @@ public enum WorkspaceGrouping: Equatable, Sendable {
 public final class WorkspaceListStore {
     private let protocolClient: CodexProtocolFacade
     private let readStateStore: WorkspaceReadStateStore
+    private let archiveStateStore: WorkspaceArchiveStateStore
     public var grouping: WorkspaceGrouping
     public private(set) var projects: [WorkspaceProject] = []
     public private(set) var projectThreadGroups: [WorkspaceProjectThreadGroup] = []
@@ -276,6 +277,7 @@ public final class WorkspaceListStore {
     public private(set) var errorMessage: String?
     private var readAt: [String: Date]
     private var localThreads: [String: ThreadSummary] = [:]
+    private var archivedThreadIDs: Set<String> = []
     private let now: @Sendable () -> Date
     private let calendar: Calendar
 
@@ -283,13 +285,16 @@ public final class WorkspaceListStore {
         protocolClient: CodexProtocolFacade,
         grouping: WorkspaceGrouping = .byProject,
         readStateStore: WorkspaceReadStateStore = UserDefaultsWorkspaceReadStateStore(),
+        archiveStateStore: WorkspaceArchiveStateStore = UserDefaultsWorkspaceArchiveStateStore(),
         now: @escaping @Sendable () -> Date = Date.init,
         calendar: Calendar = .current
     ) {
         self.protocolClient = protocolClient
         self.grouping = grouping
         self.readStateStore = readStateStore
+        self.archiveStateStore = archiveStateStore
         self.readAt = (try? readStateStore.loadReadAt()) ?? [:]
+        self.archivedThreadIDs = (try? archiveStateStore.loadArchivedThreadIDs()) ?? []
         self.now = now
         self.calendar = calendar
     }
@@ -303,8 +308,10 @@ public final class WorkspaceListStore {
             throw error
         }
         readAt = (try? readStateStore.loadReadAt()) ?? readAt
+        archivedThreadIDs = (try? archiveStateStore.loadArchivedThreadIDs()) ?? archivedThreadIDs
         let remoteThreads = (response.object?["data"]?.array ?? response.object?["threads"]?.array ?? response.object?["items"]?.array ?? [])
             .compactMap(ThreadSummary.init(json:))
+            .filter { !archivedThreadIDs.contains($0.id) }
         if readAt.isEmpty, !remoteThreads.isEmpty {
             readAt = Dictionary(uniqueKeysWithValues: remoteThreads
                 .filter { $0.status != .running }
@@ -316,16 +323,9 @@ public final class WorkspaceListStore {
             !remoteThreadIDs.contains(id)
         }
         let threads = (remoteThreads + Array(localThreads.values))
+            .filter { !archivedThreadIDs.contains($0.id) }
             .map { $0.applyingReadState(readAt[$0.id]) }
-        let index = WorkspaceIndex(threads: threads)
-        self.projects = index.projects()
-        self.projectThreadGroups = index.projectThreadGroups(limit: 5)
-        self.recentThreads = index.recentThreads()
-        self.dayThreadGroups = Self.dayThreadGroups(
-            for: self.recentThreads,
-            now: now(),
-            calendar: calendar
-        )
+        publish(threads: threads)
         self.errorMessage = nil
     }
 
@@ -336,10 +336,7 @@ public final class WorkspaceListStore {
         recentThreads = recentThreads.map { thread in
             thread.id == id ? thread.applyingReadState(readTime) : thread
         }
-        let index = WorkspaceIndex(threads: recentThreads)
-        projects = index.projects()
-        projectThreadGroups = index.projectThreadGroups(limit: 5)
-        dayThreadGroups = Self.dayThreadGroups(for: recentThreads, now: now(), calendar: calendar)
+        publish(threads: recentThreads)
     }
 
     public func upsertLocalThread(id: String, cwd: String, preview: String = "") {
@@ -359,10 +356,22 @@ public final class WorkspaceListStore {
         try? readStateStore.saveReadAt(readAt)
         recentThreads.removeAll { $0.id == id }
         recentThreads.insert(summary, at: 0)
-        let index = WorkspaceIndex(threads: recentThreads)
-        projects = index.projects()
-        projectThreadGroups = index.projectThreadGroups(limit: 5)
-        dayThreadGroups = Self.dayThreadGroups(for: recentThreads, now: now(), calendar: calendar)
+        publish(threads: recentThreads)
+    }
+
+    public func archiveThread(id: String) {
+        archivedThreadIDs.insert(id)
+        try? archiveStateStore.saveArchivedThreadIDs(archivedThreadIDs)
+        localThreads[id] = nil
+        publish(threads: recentThreads.filter { $0.id != id })
+    }
+
+    private func publish(threads: [ThreadSummary]) {
+        let index = WorkspaceIndex(threads: threads)
+        self.projects = index.projects()
+        self.projectThreadGroups = index.projectThreadGroups(limit: 5)
+        self.recentThreads = index.recentThreads()
+        self.dayThreadGroups = Self.dayThreadGroups(for: self.recentThreads, now: now(), calendar: calendar)
     }
 
     private static func dayThreadGroups(
@@ -414,6 +423,11 @@ public protocol WorkspaceReadStateStore: AnyObject, Sendable {
     func saveReadAt(_ readAt: [String: Date]) throws
 }
 
+public protocol WorkspaceArchiveStateStore: AnyObject, Sendable {
+    func loadArchivedThreadIDs() throws -> Set<String>
+    func saveArchivedThreadIDs(_ ids: Set<String>) throws
+}
+
 public final class UserDefaultsWorkspaceReadStateStore: WorkspaceReadStateStore, @unchecked Sendable {
     private let defaults: UserDefaults
     private let key: String
@@ -437,5 +451,28 @@ public final class UserDefaultsWorkspaceReadStateStore: WorkspaceReadStateStore,
 
     public func saveReadAt(_ readAt: [String: Date]) throws {
         defaults.set(readAt.mapValues(\.timeIntervalSince1970), forKey: key)
+    }
+}
+
+public final class UserDefaultsWorkspaceArchiveStateStore: WorkspaceArchiveStateStore, @unchecked Sendable {
+    private let defaults: UserDefaults
+    private let key: String
+
+    public init(defaults: UserDefaults = .standard, key: String = "workspace.archivedThreadIDs") {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    public init(defaults: UserDefaults = .standard, key: String = "workspace.archivedThreadIDs", namespace: String) {
+        self.defaults = defaults
+        self.key = namespace.isEmpty ? key : "\(key).\(namespace)"
+    }
+
+    public func loadArchivedThreadIDs() throws -> Set<String> {
+        Set(defaults.stringArray(forKey: key) ?? [])
+    }
+
+    public func saveArchivedThreadIDs(_ ids: Set<String>) throws {
+        defaults.set(Array(ids).sorted(), forKey: key)
     }
 }

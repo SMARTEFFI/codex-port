@@ -83,6 +83,7 @@ public struct HostAgentMenuPairingCoordinator: Sendable {
     public typealias ManualCodeGenerator = @Sendable () -> String
 
     private let hostID: UUID
+    private let hostDisplayName: String?
     private let now: DateProvider
     private let tokenIDGenerator: TokenIDGenerator
     private let manualCodeGenerator: ManualCodeGenerator
@@ -91,11 +92,13 @@ public struct HostAgentMenuPairingCoordinator: Sendable {
 
     public init(
         hostID: UUID,
+        hostDisplayName: String? = nil,
         now: @escaping DateProvider = Date.init,
         tokenIDGenerator: @escaping TokenIDGenerator = { "pairing-token-\(UUID().uuidString)" },
         manualCodeGenerator: @escaping ManualCodeGenerator = { String(format: "%03d-%03d", Int.random(in: 0...999), Int.random(in: 0...999)) }
     ) {
         self.hostID = hostID
+        self.hostDisplayName = hostDisplayName
         self.now = now
         self.tokenIDGenerator = tokenIDGenerator
         self.manualCodeGenerator = manualCodeGenerator
@@ -151,11 +154,30 @@ public struct HostAgentMenuPairingCoordinator: Sendable {
             state: .ready,
             tokenID: token.id,
             pairingKey: token.pairingMaterial,
-            qrPayload: "codexport://pair?token=\(token.id)",
+            qrPayload: Self.qrPayload(tokenID: token.id, manualCode: manualCode, hostDisplayName: hostDisplayName),
             expiresAt: expiresAt,
             hostID: hostID
         )
         return active
+    }
+
+    private static func qrPayload(
+        tokenID: String,
+        manualCode: String,
+        hostDisplayName: String?
+    ) -> String {
+        var components = URLComponents()
+        components.scheme = "codexport"
+        components.host = "pair"
+        components.queryItems = [
+            URLQueryItem(name: "token", value: tokenID),
+            URLQueryItem(name: "code", value: manualCode),
+        ]
+        if let hostDisplayName = hostDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !hostDisplayName.isEmpty {
+            components.queryItems?.append(URLQueryItem(name: "hostName", value: hostDisplayName))
+        }
+        return components.url?.absoluteString ?? "codexport://pair?token=\(tokenID)"
     }
 
     public func copyPairingKey() -> String? {

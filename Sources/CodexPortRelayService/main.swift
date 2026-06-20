@@ -4,7 +4,13 @@ import Foundation
 import Dispatch
 
 let configuration = try RelayServiceConfiguration(arguments: CommandLine.arguments)
-let gateway = RelayAuthenticatedStreamGateway(supportedVersions: [.v0_2_0])
+let stateStore = FileRelayAuthenticatedStreamGatewayStateStore(directoryPath: configuration.storagePath)
+let gateway = RelayAuthenticatedStreamGateway(
+    supportedVersions: [.v0_2_0],
+    iceConfigurationProvider: configuration.makeICEConfigurationProvider(),
+    initialState: try stateStore.load(),
+    stateStore: stateStore
+)
 let service = RelayPublicWebSocketService(
     host: configuration.listenHost,
     port: configuration.listenPort,

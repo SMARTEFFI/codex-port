@@ -64,11 +64,13 @@ current VPS smoke:
 ```bash
 launchctl setenv CODEXPORT_RELAY_BASE_URL https://codexport.smarteffi.net
 launchctl setenv CODEXPORT_RELAY_HOST_ID 11111111-2222-3333-4444-555555555555
-launchctl setenv CODEXPORT_RELAY_HOST_NAME "CodexPort Dev Mac"
 launchctl setenv CODEXPORT_RELAY_HOST_USER "$USER"
 launchctl setenv CODEXPORT_CODEX_CONTROL_SOCKET_PATH "$HOME/.codex/app-server-control/app-server-control.sock"
 open ".scratch/apps/CodexPort Host Agent.app"
 ```
+
+Leave `CODEXPORT_RELAY_HOST_NAME` unset to use the Mac's real local hostname.
+Set it only when intentionally overriding the displayed Host name.
 
 `LSUIElement=true` is set in `Info.plist`, so the app does not appear in the
 Dock. Use the menu bar icon to open the window and choose `New Pairing`.
@@ -110,7 +112,7 @@ WEBRTC_SIDECAR_PATH="$(scripts/build-webrtc-sidecar.sh | tail -n 1)"
 
 CODEXPORT_RELAY_BASE_URL=https://codexport.smarteffi.net \
 CODEXPORT_RELAY_HOST_ID=11111111-2222-3333-4444-555555555555 \
-CODEXPORT_RELAY_HOST_NAME="CodexPort Dev Mac" \
+CODEXPORT_RELAY_HOST_NAME="$(scutil --get LocalHostName 2>/dev/null || hostname -s)" \
 CODEXPORT_RELAY_HOST_USER="$USER" \
 CODEXPORT_CODEX_CONTROL_SOCKET_PATH="$HOME/.codex/app-server-control/app-server-control.sock" \
 CODEXPORT_WEBRTC_SIDECAR_PATH="$WEBRTC_SIDECAR_PATH" \

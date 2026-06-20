@@ -21,6 +21,24 @@ import Testing
     #expect(try RelayP2PWebRTCSignalingPayloadCodec.decodeICECandidate(encodedCandidate) == candidate)
 }
 
+@Test func relayP2PWebRTCSignalingPayloadCodecCarriesOfferIntentWithLegacyDefault() throws {
+    let offer = WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\nnew-offer")
+
+    let encodedRestart = try RelayP2PWebRTCSignalingPayloadCodec.encodeOffer(
+        offer,
+        intent: .iceRestart
+    )
+    let decodedRestart = try RelayP2PWebRTCSignalingPayloadCodec.decodeOffer(encodedRestart)
+    let decodedLegacy = try RelayP2PWebRTCSignalingPayloadCodec.decodeOffer(
+        RelayP2PWebRTCSignalingPayloadCodec.encode(offer)
+    )
+
+    #expect(decodedRestart.description == offer)
+    #expect(decodedRestart.intent == .iceRestart)
+    #expect(decodedLegacy.description == offer)
+    #expect(decodedLegacy.intent == .openDataChannel)
+}
+
 @Test func webRTCRuntimeConfigurationCarriesSTUNAndTURNServersWithoutPayloadSecretsInDescription() {
     let configuration = WebRTCRuntimeConfiguration(iceServers: [
         WebRTCICEServerConfiguration(urls: ["stun:stun.example.test:3478"]),
@@ -62,7 +80,7 @@ import Testing
     #expect(!String(describing: configuration).contains("turn-secret"))
 }
 
-@Test func webRTCRuntimeConfigurationEnvironmentParsesURLLists() throws {
+@Test func webRTCRuntimeConfigurationEnvironmentParsesURLListsWithTURNCredentials() throws {
     let configuration = try WebRTCRuntimeConfigurationEnvironment.make(environment: [
         "CODEXPORT_WEBRTC_STUN_URLS": "stun:one.example.test:3478, stun:two.example.test:3478",
         "CODEXPORT_WEBRTC_TURN_URLS": "turn:turn.example.test:3478?transport=udp turn:turn.example.test:3478?transport=tcp",
@@ -84,6 +102,48 @@ import Testing
             credential: "turn-secret"
         ),
     ])
+}
+
+@Test func webRTCRuntimeConfigurationEnvironmentOmitsTURNURLsWithoutCredentials() throws {
+    let configuration = try WebRTCRuntimeConfigurationEnvironment.make(environment: [
+        "CODEXPORT_WEBRTC_STUN_URLS": "stun:one.example.test:3478",
+        "CODEXPORT_WEBRTC_TURN_URLS": "turn:turn.example.test:3478?transport=udp",
+    ])
+
+    #expect(configuration.iceServers == [
+        WebRTCICEServerConfiguration(urls: ["stun:one.example.test:3478"]),
+    ])
+}
+
+@Test func webRTCRuntimeConfigurationEnvironmentUsesProductionRelaySTUNWhenNoICEEnvironmentIsProvided() throws {
+    let configuration = try WebRTCRuntimeConfigurationEnvironment.make(environment: [:])
+
+    #expect(configuration.iceServers == WebRTCRuntimeConfigurationEnvironment.defaultICEServers)
+    #expect(configuration.iceServers == [
+        WebRTCICEServerConfiguration(urls: ["stun:codexport.smarteffi.net:3478"]),
+    ])
+    #expect(configuration.iceServers.allSatisfy { server in
+        server.username == nil && server.credential == nil
+    })
+}
+
+@Test func webRTCRuntimeConfigurationEnvironmentDerivesDefaultSTUNFromRelayBaseURL() throws {
+    let configuration = try WebRTCRuntimeConfigurationEnvironment.make(
+        environment: ["CODEXPORT_RELAY_BASE_URL": "https://relay.example.test"],
+        relayBaseURL: nil
+    )
+
+    #expect(configuration.iceServers == [
+        WebRTCICEServerConfiguration(urls: ["stun:relay.example.test:3478"]),
+    ])
+}
+
+@Test func webRTCRuntimeConfigurationEnvironmentFallbackDoesNotReturnEmptyICEServers() throws {
+    let configuration = WebRTCRuntimeConfigurationEnvironment.makeOrDefault(environment: [
+        "CODEXPORT_WEBRTC_ICE_SERVERS_JSON": "not-json",
+    ])
+
+    #expect(configuration.iceServers == WebRTCRuntimeConfigurationEnvironment.defaultICEServers)
 }
 
 @Test func webRTCRuntimeConfigurationEnvironmentRejectsInvalidJSON() throws {

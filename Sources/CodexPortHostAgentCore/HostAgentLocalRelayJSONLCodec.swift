@@ -78,7 +78,9 @@ public enum HostAgentLocalRelayJSONLCodec {
                     sessionID: try string("sessionID", in: object),
                     threadID: try string("threadID", in: object),
                     turnID: try string("turnID", in: object),
-                    cwd: object["cwd"] as? String
+                    cwd: object["cwd"] as? String,
+                    loadInitialHistory: bool("loadInitialHistory", in: object) ?? true,
+                    resumeLiveSession: bool("resumeLiveSession", in: object) ?? true
                 )
             )
         case "prompt":
@@ -179,11 +181,18 @@ public enum HostAgentLocalRelayJSONLCodec {
         )
     }
 
-    public static func encodeError(_ reason: String, clientID: String? = nil) throws -> String {
+    public static func encodeError(
+        _ reason: String,
+        clientID: String? = nil,
+        includeReason: Bool = false
+    ) throws -> String {
         var object: [String: Any] = [
             "type": "error",
             "reasonBytes": reason.utf8.count,
         ]
+        if includeReason {
+            object["reason"] = reason
+        }
         if let clientID {
             object["clientID"] = clientID
         }

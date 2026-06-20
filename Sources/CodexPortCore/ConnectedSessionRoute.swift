@@ -1,7 +1,11 @@
 import Foundation
 
 public enum ConnectedSessionRoute: Sendable {
-    public typealias RelaySessionClientFactory = @Sendable (_ threadID: String, _ sessionStore: SessionStore) -> RelayJSONLSessionClient?
+    public typealias RelaySessionClientFactory = @Sendable (
+        _ threadID: String,
+        _ sessionStore: SessionStore,
+        _ options: RelaySessionContext.AttachOptions
+    ) -> RelayJSONLSessionClient?
 
     case directSSH(protocolClient: CodexProtocolClient, events: AppServerEventSource?)
     case relay(
@@ -78,12 +82,15 @@ public enum ConnectedSessionRoute: Sendable {
         }
     }
 
-    public func relaySessionContext(threadID: String) -> RelaySessionContext? {
+    public func relaySessionContext(
+        threadID: String,
+        options: RelaySessionContext.AttachOptions = .init()
+    ) -> RelaySessionContext? {
         switch self {
         case .directSSH:
             return nil
         case let .relay(_, _, _, registry):
-            return registry.context(threadID: threadID)
+            return registry.context(threadID: threadID, options: options)
         }
     }
 

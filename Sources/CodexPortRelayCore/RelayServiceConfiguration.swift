@@ -11,6 +11,7 @@ public enum RelayServiceConfigurationError: Error, Equatable, Sendable {
     case missingPublicBaseURL
     case invalidPublicBaseURL(String)
     case invalidTLSMode(String)
+    case invalidDuration(String)
 }
 
 public struct RelayServiceConfiguration: Equatable, Sendable {
@@ -20,6 +21,11 @@ public struct RelayServiceConfiguration: Equatable, Sendable {
     public var storagePath: String
     public var logLevel: String
     public var tlsMode: RelayServiceTLSMode
+    public var turnSharedSecret: String?
+    public var stunURLs: [String]
+    public var turnURLs: [String]
+    public var turnCredentialTTL: Duration
+    public var webRTCDataChannelLabel: String
 
     public init(
         arguments: [String],
@@ -53,6 +59,24 @@ public struct RelayServiceConfiguration: Equatable, Sendable {
             throw RelayServiceConfigurationError.invalidTLSMode(rawTLSMode)
         }
         self.tlsMode = tlsMode
+        turnSharedSecret = Self.nonEmpty(environment["CODEXPORT_RELAY_TURN_SHARED_SECRET"])
+            ?? Self.secretFileValue(environment["CODEXPORT_RELAY_TURN_SHARED_SECRET_FILE"])
+        stunURLs = Self.splitURLs(environment["CODEXPORT_RELAY_STUN_URLS"])
+        if stunURLs.isEmpty, let host = publicBaseURL.host {
+            stunURLs = ["stun:\(host):3478"]
+        }
+        turnURLs = Self.splitURLs(environment["CODEXPORT_RELAY_TURN_URLS"])
+        if turnURLs.isEmpty, let host = publicBaseURL.host {
+            turnURLs = [
+                "turn:\(host):3478?transport=udp",
+                "turn:\(host):3478?transport=tcp",
+            ]
+        }
+        turnCredentialTTL = try Self.parseDuration(
+            environment["CODEXPORT_RELAY_TURN_TTL_SECONDS"] ?? "600"
+        )
+        webRTCDataChannelLabel = Self.nonEmpty(environment["CODEXPORT_RELAY_WEBRTC_DATA_CHANNEL_LABEL"])
+            ?? "codexport-client-host"
     }
 
     public var streamEndpointURL: URL {
@@ -71,6 +95,19 @@ public struct RelayServiceConfiguration: Equatable, Sendable {
         publicBaseURL.appending(path: "healthz")
     }
 
+    public func makeICEConfigurationProvider() -> any RelayP2PICEConfigurationProviding {
+        guard let turnSharedSecret, !turnURLs.isEmpty else {
+            return RelayP2PICEConfigurationProvider.empty
+        }
+        return CoturnRESTICEConfigurationProvider(
+            stunURLs: stunURLs,
+            turnURLs: turnURLs,
+            sharedSecret: turnSharedSecret,
+            ttl: turnCredentialTTL,
+            dataChannelLabel: webRTCDataChannelLabel
+        )
+    }
+
     private func websocketURL(path: String) -> URL {
         var components = URLComponents(url: publicBaseURL, resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "https" ? "wss" : "ws"
@@ -85,6 +122,13 @@ public struct RelayServiceConfiguration: Equatable, Sendable {
         return port
     }
 
+    private static func parseDuration(_ rawValue: String) throws -> Duration {
+        guard let seconds = Double(rawValue), seconds > 0 else {
+            throw RelayServiceConfigurationError.invalidDuration(rawValue)
+        }
+        return .milliseconds(Int64(seconds * 1_000))
+    }
+
     private static func argumentValue(_ name: String, in arguments: [String]) -> String? {
         guard let index = arguments.firstIndex(of: name) else {
             return nil
@@ -94,5 +138,29 @@ public struct RelayServiceConfiguration: Equatable, Sendable {
             return nil
         }
         return arguments[valueIndex]
+    }
+
+    private static func splitURLs(_ rawValue: String?) -> [String] {
+        guard let rawValue else { return [] }
+        return rawValue
+            .split { character in
+                character == "," || character == "\n" || character == " "
+            }
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func nonEmpty(_ rawValue: String?) -> String? {
+        let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private static func secretFileValue(_ rawPath: String?) -> String? {
+        guard let path = nonEmpty(rawPath),
+              let value = try? String(contentsOfFile: path, encoding: .utf8)
+        else {
+            return nil
+        }
+        return nonEmpty(value)
     }
 }

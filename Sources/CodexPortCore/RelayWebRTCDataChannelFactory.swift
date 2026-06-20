@@ -2,7 +2,7 @@ import Foundation
 import CodexPortShared
 import CodexPortWebRTC
 
-public struct RelayWebRTCDataChannelFactory: RelayP2PDataChannelFactory {
+public struct RelayWebRTCDataChannelFactory: RelayP2PDataChannelFactory, P2PConnectionRecoveryRuntime {
     private let signalingClient: RelayP2PSignalingClient
     private let configuration: WebRTCRuntimeConfiguration
     private let runtime: WebRTCPlatformDataChannelOpening
@@ -14,9 +14,9 @@ public struct RelayWebRTCDataChannelFactory: RelayP2PDataChannelFactory {
         signalingClient: RelayP2PSignalingClient,
         configuration: WebRTCRuntimeConfiguration,
         runtime: WebRTCPlatformDataChannelOpening = DefaultWebRTCPlatformDataChannelRuntime.makeOpeningRuntime(),
-        answerTimeout: Duration = .seconds(8),
-        dataChannelOpenTimeout: Duration = .seconds(8),
-        remoteICEPollingDuration: Duration = .seconds(8)
+        answerTimeout: Duration = .seconds(15),
+        dataChannelOpenTimeout: Duration = .seconds(15),
+        remoteICEPollingDuration: Duration = .seconds(15)
     ) {
         self.signalingClient = signalingClient
         self.configuration = configuration
@@ -27,16 +27,22 @@ public struct RelayWebRTCDataChannelFactory: RelayP2PDataChannelFactory {
     }
 
     public func openDataChannel(_ request: RelayP2PDataChannelOpenRequest) async throws -> any WebRTCDataChannelTransport {
+        let runtimeConfiguration = request.iceConfiguration.iceServers.isEmpty
+            ? configuration
+            : request.iceConfiguration
         let opened = try await runtime.openDataChannel(
             session: request.session,
-            configuration: configuration
+            configuration: runtimeConfiguration
         )
         try await signalingClient.send(
             RelayP2PSignalingMessageDTO(
                 from: .device,
                 to: .host,
                 kind: .offer,
-                payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(opened.offer)
+                payload: try RelayP2PWebRTCSignalingPayloadCodec.encodeOffer(
+                    opened.offer,
+                    intent: .openDataChannel
+                )
             ),
             sessionID: request.session.sessionID
         )
@@ -62,12 +68,17 @@ public struct RelayWebRTCDataChannelFactory: RelayP2PDataChannelFactory {
                 dataChannel: opened.dataChannel,
                 processedICEPayloads: &processedICEPayloads
             )
-            try await waitForDataChannelOpen(opened.dataChannel)
             let remoteICEPollingTask = makeRemoteICEPollingTask(
                 sessionID: request.session.sessionID,
                 dataChannel: opened.dataChannel,
                 processedICEPayloads: processedICEPayloads
             )
+            do {
+                try await waitForDataChannelOpen(opened.dataChannel)
+            } catch {
+                remoteICEPollingTask.cancel()
+                throw error
+            }
             return RelayICEForwardingDataChannelTransport(
                 dataChannel: opened.dataChannel,
                 localICEForwardTask: localICEForwardTask,
@@ -76,6 +87,137 @@ public struct RelayWebRTCDataChannelFactory: RelayP2PDataChannelFactory {
         } catch {
             localICEForwardTask.cancel()
             throw error
+        }
+    }
+
+    public func restartICE(_ request: P2PConnectionRecoveryRequest) async throws -> P2PConnectionRecoveryTransport {
+        let iceConfiguration = try await signalingClient.iceConfiguration(
+            hostID: request.session.hostID,
+            deviceID: request.session.deviceID,
+            pairingRecordID: request.session.pairingRecordID
+        ).configuration
+        let runtimeConfiguration = iceConfiguration.iceServers.isEmpty ? configuration : iceConfiguration
+        let opened = try await runtime.restartICE(
+            on: request.dataChannel,
+            configuration: runtimeConfiguration
+        )
+        try await finishOfferAnswerExchange(
+            opened: opened,
+            sessionID: request.session.sessionID,
+            intent: .iceRestart
+        )
+        let path = try await pathAfterHealthCheck(
+            dataChannel: opened.dataChannel,
+            requireDirect: false
+        )
+        return P2PConnectionRecoveryTransport(dataChannel: opened.dataChannel, path: path)
+    }
+
+    public func rebuildPeerConnection(_ request: P2PConnectionRecoveryRequest) async throws -> P2PConnectionRecoveryTransport {
+        let iceConfiguration = try await signalingClient.iceConfiguration(
+            hostID: request.session.hostID,
+            deviceID: request.session.deviceID,
+            pairingRecordID: request.session.pairingRecordID
+        ).configuration
+        let runtimeConfiguration = iceConfiguration.iceServers.isEmpty ? configuration : iceConfiguration
+        let opened = try await runtime.openDataChannel(
+            session: request.session,
+            configuration: runtimeConfiguration
+        )
+        try await finishOfferAnswerExchange(
+            opened: opened,
+            sessionID: request.session.sessionID,
+            intent: .openDataChannel
+        )
+        let path = try await pathAfterHealthCheck(
+            dataChannel: opened.dataChannel,
+            requireDirect: false
+        )
+        return P2PConnectionRecoveryTransport(dataChannel: opened.dataChannel, path: path)
+    }
+
+    public func probeDirectPath(_ request: P2PConnectionRecoveryRequest) async throws -> P2PConnectionRecoveryTransport {
+        let rebuilt = try await rebuildPeerConnection(request)
+        let path = try await pathAfterHealthCheck(
+            dataChannel: rebuilt.dataChannel,
+            requireDirect: true
+        )
+        return P2PConnectionRecoveryTransport(dataChannel: rebuilt.dataChannel, path: path)
+    }
+
+    private func finishOfferAnswerExchange(
+        opened: WebRTCPlatformDataChannelOpenResult,
+        sessionID: UUID,
+        intent: WebRTCSessionDescriptionOfferIntent
+    ) async throws {
+        try await signalingClient.send(
+            RelayP2PSignalingMessageDTO(
+                from: .device,
+                to: .host,
+                kind: .offer,
+                payload: try RelayP2PWebRTCSignalingPayloadCodec.encodeOffer(
+                    opened.offer,
+                    intent: intent
+                )
+            ),
+            sessionID: sessionID
+        )
+        for candidate in opened.localICECandidates {
+            try await signalingClient.send(
+                RelayP2PSignalingMessageDTO(
+                    from: .device,
+                    to: .host,
+                    kind: .iceCandidate,
+                    payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(candidate)
+                ),
+                sessionID: sessionID
+            )
+        }
+        let localICEForwardTask = makeLocalICEForwardTask(
+            sessionID: sessionID,
+            updates: opened.localICECandidateUpdates
+        )
+        var processedICEPayloads: Set<String> = []
+        do {
+            try await waitForAnswerAndCandidates(
+                sessionID: sessionID,
+                dataChannel: opened.dataChannel,
+                processedICEPayloads: &processedICEPayloads
+            )
+            let remoteICEPollingTask = makeRemoteICEPollingTask(
+                sessionID: sessionID,
+                dataChannel: opened.dataChannel,
+                processedICEPayloads: processedICEPayloads
+            )
+            do {
+                try await waitForDataChannelOpen(opened.dataChannel)
+            } catch {
+                remoteICEPollingTask.cancel()
+                throw error
+            }
+        } catch {
+            localICEForwardTask.cancel()
+            throw error
+        }
+    }
+
+    private func pathAfterHealthCheck(
+        dataChannel: WebRTCDataChannelTransport,
+        requireDirect: Bool
+    ) async throws -> P2PConnectionRecoveryPath {
+        let health = try await runtime.checkDirectPath(
+            on: dataChannel,
+            requiredPingPongCount: 2
+        )
+        switch health.selectedCandidatePairPath {
+        case .direct where health.pingPongSucceeded:
+            return .direct
+        case .relay where !requireDirect:
+            return .relay
+        case .unknown where !requireDirect:
+            return .relay
+        case .direct, .relay, .unknown:
+            throw WebRTCDataChannelTransportError.iceFailed(reason: "direct path probe did not validate a non-relay candidate pair")
         }
     }
 
@@ -158,9 +300,9 @@ public struct RelayWebRTCDataChannelFactory: RelayP2PDataChannelFactory {
                         return
                     case .dataChannelClosed:
                         throw WebRTCDataChannelTransportError.dataChannelClosed
-                    case let .directFailed(reason), let .turnFailed(reason):
+                    case let .turnFailed(reason):
                         throw WebRTCDataChannelTransportError.iceFailed(reason: reason)
-                    case .iceGathering, .directConnected, .turnRelayedConnected:
+                    case .iceGathering, .directConnected, .directFailed, .turnRelayedConnected:
                         continue
                     }
                 }

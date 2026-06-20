@@ -31,6 +31,27 @@ import Testing
     )
 
     #expect(qr.pairingTokenID == "pairing-token-qr")
+
+    let qrWithManualCode = try RelayHostProductionPairingInput(
+        relayServerEndpoint: "https://relay.example.test",
+        pairingMaterial: "codexport://pair?token=pairing-token-qr&code=123-456",
+        deviceDisplayName: "iPhone A"
+    )
+
+    #expect(qrWithManualCode.pairingTokenID == "123-456")
+}
+
+@Test func relayPairingScannedMaterialExtractsPairingCodeAndHostMetadata() throws {
+    let scanned = try RelayPairingScannedMaterial.parse(
+        "codexport://pair?token=pairing-token-qr&code=123-456&hostName=Mac%20Studio"
+    )
+
+    #expect(scanned.pairingCode == "123-456")
+    #expect(scanned.hostDisplayName == "Mac Studio")
+
+    let legacyQR = try RelayPairingScannedMaterial.parse("codexport://pair?token=pairing-token-qr")
+    #expect(legacyQR.pairingCode == "pairing-token-qr")
+    #expect(legacyQR.hostDisplayName == nil)
 }
 
 @Test func relayHostProductionPairingInputRejectsInvalidEndpointAndMissingToken() {

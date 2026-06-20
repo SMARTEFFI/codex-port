@@ -183,6 +183,39 @@ import Testing
     #expect(failedState.iosConnectionLogLines.contains("Path: failed - TURN failed - TURN credentials rejected"))
 }
 
+@Test func remoteConnectionPathPresentationCoversDirectRelayReconnectAndProbeStates() {
+    var state = RemoteConnectionPathState.fromPresence(
+        .online(activeConnectionCount: 1),
+        authorization: .authorizedToSignal(pairingRecordID: "pairing-1")
+    )
+    state.apply(.iceGathering)
+    state.apply(.turnRelayedConnected)
+    state.apply(.dataChannelOpen)
+    state.markHostProtocolReady()
+    state.markDirectProbeActive(reason: "relay fallback")
+
+    #expect(state.transportState == .connected)
+    #expect(state.candidatePath == .relay)
+    #expect(state.relayFallbackActive)
+    #expect(state.directProbeActive)
+    #expect(state.iosPathSummary == "中转 · 尝试直连中")
+    #expect(state.hostAgentMenuItems.contains("Direct probe active"))
+
+    state.markReconnecting(reason: "network changed")
+    #expect(state.transportState == .reconnecting)
+    #expect(state.lastReconnectReason == "network changed")
+    #expect(state.iosPathSummary == "重连中")
+
+    state.apply(.directConnected)
+    state.markUpgradedToDirect()
+    #expect(state.transportState == .connected)
+    #expect(state.candidatePath == .direct)
+    #expect(!state.relayFallbackActive)
+    #expect(!state.directProbeActive)
+    #expect(state.iosPathSummary == "直连")
+    #expect(state.iosConnectionLogLines.contains("Path transition: upgraded to direct"))
+}
+
 @Test func p2pConnectionRecoveryReplacesStaleDataChannelWithoutClearingLoadedHistory() {
     var recovery = P2PConnectionRecoveryState(
         pathState: RemoteConnectionPathState(
@@ -266,6 +299,94 @@ import Testing
         "Host protocol: not ready",
         "Codex live source: not ready",
     ])
+    #expect(recovery.loadedHistoryItems == [.assistantMessage("cached answer")])
+}
+
+@Test func p2pConnectionRecoveryPrefersICERestartThenRebuildsSameThreadWhenRestartFails() {
+    var recovery = P2PConnectionRecoveryState(
+        pathState: RemoteConnectionPathState(
+            signaling: .authorizedToSignal,
+            ice: .gathering,
+            dataPath: .directConnected,
+            dataChannel: .open,
+            hostProtocol: .ready,
+            codexLiveSource: .ready
+        ),
+        loadedHistoryItems: [
+            .userMessage("older question"),
+            .assistantMessage("older answer"),
+        ],
+        sessionID: "session-1",
+        threadID: "thread-1"
+    )
+
+    recovery.apply(.networkChanged)
+    #expect(recovery.status == .reconnecting(reason: "network changed"))
+    #expect(recovery.nextAction == .iceRestart(sessionID: "session-1", threadID: "thread-1", preferDirect: true))
+    #expect(recovery.pathState.transportState == .reconnecting)
+
+    recovery.apply(.iceRestartFailed(reason: "ICE restart timed out"))
+    #expect(recovery.status == .replacingStaleConnection)
+    #expect(recovery.nextAction == .rebuildPeerConnection(sessionID: "session-1", threadID: "thread-1"))
+
+    recovery.apply(.replacementStarted)
+    recovery.apply(.webRTC(.iceGathering))
+    recovery.apply(.webRTC(.directConnected))
+    recovery.apply(.webRTC(.dataChannelOpen))
+    recovery.apply(.hostProtocolReady)
+    recovery.apply(.historyReconciled(items: [
+        .userMessage("older question"),
+        .assistantMessage("older answer"),
+        .assistantMessage("during outage"),
+    ]))
+    recovery.apply(.codexLiveSourceReady)
+
+    #expect(recovery.status == .completed)
+    #expect(recovery.nextAction == .none)
+    #expect(recovery.sessionID == "session-1")
+    #expect(recovery.threadID == "thread-1")
+    #expect(recovery.loadedHistoryItems == [
+        .userMessage("older question"),
+        .assistantMessage("older answer"),
+        .assistantMessage("during outage"),
+    ])
+}
+
+@Test func p2pConnectionRecoveryRunsDirectProbeWhileRelayFallbackAndUpgradesCurrentSessionToDirect() {
+    var recovery = P2PConnectionRecoveryState(
+        pathState: RemoteConnectionPathState(
+            signaling: .authorizedToSignal,
+            ice: .gathering,
+            dataPath: .turnRelayedConnected,
+            dataChannel: .open,
+            hostProtocol: .ready,
+            codexLiveSource: .ready
+        ),
+        loadedHistoryItems: [.assistantMessage("cached answer")],
+        sessionID: "session-1",
+        threadID: "thread-1"
+    )
+
+    recovery.apply(.relayFallbackActive)
+    #expect(recovery.pathState.directProbeActive)
+    #expect(recovery.directProbeSchedule == .readyNow)
+    #expect(recovery.nextAction == .directProbe(sessionID: "session-1", threadID: "thread-1"))
+
+    recovery.apply(.directProbeFailed(reason: "no srflx candidate"))
+    #expect(recovery.pathState.directProbeActive)
+    #expect(recovery.directProbeSchedule == .backoff(seconds: 30))
+
+    recovery.apply(.manualRetryRequested)
+    #expect(recovery.directProbeSchedule == .readyNow)
+
+    recovery.apply(.directProbeSucceeded)
+    #expect(recovery.status == .completed)
+    #expect(recovery.nextAction == .none)
+    #expect(recovery.pathState.candidatePath == .direct)
+    #expect(!recovery.pathState.relayFallbackActive)
+    #expect(!recovery.pathState.directProbeActive)
+    #expect(recovery.sessionID == "session-1")
+    #expect(recovery.threadID == "thread-1")
     #expect(recovery.loadedHistoryItems == [.assistantMessage("cached answer")])
 }
 

@@ -176,26 +176,37 @@ import Testing
             dataChannel: dataChannel
         )
     )
+    let fallbackConfiguration = WebRTCRuntimeConfiguration(iceServers: [
+        WebRTCICEServerConfiguration(urls: ["stun:fallback.example.test:3478"]),
+    ])
+    let relayIssuedConfiguration = WebRTCRuntimeConfiguration(iceServers: [
+        WebRTCICEServerConfiguration(urls: ["stun:relay-issued.example.test:3478"]),
+        WebRTCICEServerConfiguration(
+            urls: ["turn:relay-issued.example.test:3478?transport=udp"],
+            username: "1600:pairing-record",
+            credential: "short-lived-turn-secret"
+        ),
+    ])
     let factory = RelayWebRTCDataChannelFactory(
         signalingClient: RelayP2PSignalingClient(
             relayBaseURL: URL(string: "https://relay.example.test")!,
             httpClient: signalingHTTP
         ),
-        configuration: WebRTCRuntimeConfiguration(iceServers: [
-            WebRTCICEServerConfiguration(urls: ["stun:stun.example.test:3478"]),
-        ]),
+        configuration: fallbackConfiguration,
         runtime: runtime,
         answerTimeout: .milliseconds(250)
     )
 
     let opened = try await factory.openDataChannel(RelayP2PDataChannelOpenRequest(
         relayHost: relayHost,
-        session: session
+        session: session,
+        iceConfiguration: relayIssuedConfiguration
     ))
 
     try await opened.send(Data("ping".utf8))
     #expect(dataChannel.sentMessages == [Data("ping".utf8)])
     #expect(await runtime.openedSessions == [session])
+    #expect(await runtime.openedConfigurations == [relayIssuedConfiguration])
     #expect(await runtime.appliedAnswers == [remoteAnswer])
     #expect(await runtime.addedCandidates == [remoteCandidate])
     #expect(signalingHTTP.sentMessages.map(\.kind) == [.offer, .iceCandidate])
@@ -204,6 +215,92 @@ import Testing
 }
 
 @Test func relayWebRTCDataChannelFactoryWaitsForDataChannelOpenBeforeReturning() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let sessionID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
+    let session = RelayP2POpenSessionResponse(
+        sessionID: sessionID,
+        hostID: hostID,
+        deviceID: deviceID,
+        pairingRecordID: "pairing-\(hostID.uuidString)-\(deviceID.uuidString)",
+        selectedVersion: .v0_2_0,
+        openedAtUnixTime: 100
+    )
+    let relayHost = RelayHost(
+        hostAgentID: hostID,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: session.pairingRecordID,
+        deviceID: deviceID,
+        relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+        presence: .online(activeConnectionCount: 1),
+        diagnosticsSummary: "paired"
+    )
+    let remoteAnswer = WebRTCSessionDescriptionPayload(type: .answer, sdp: "v=0\r\nremote-answer")
+    let relayIssuedConfiguration = WebRTCRuntimeConfiguration(iceServers: [
+        WebRTCICEServerConfiguration(urls: ["stun:relay-issued.example.test:3478"]),
+        WebRTCICEServerConfiguration(
+            urls: ["turn:relay-issued.example.test:3478?transport=udp"],
+            username: "1600:pairing-record",
+            credential: "short-lived-turn-secret"
+        ),
+    ])
+    let signalingHTTP = RecordingRelayP2PSignalingHTTPClient(
+        remoteMessages: [
+            RelayP2PSignalingMessageDTO(
+                from: .host,
+                to: .device,
+                kind: .answer,
+                payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(remoteAnswer)
+            ),
+        ],
+        iceConfigurationResponse: RelayP2PICEConfigurationResponse(
+            configuration: relayIssuedConfiguration,
+            expiresAtUnixTime: 1_600
+        )
+    )
+    let dataChannel = RecordingWebRTCDataChannelTransport(autoOpen: false)
+    let runtime = RecordingWebRTCOpeningRuntime(
+        result: WebRTCPlatformDataChannelOpenResult(
+            offer: WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\nlocal-offer"),
+            localICECandidates: [],
+            dataChannel: dataChannel
+        )
+    )
+    let factory = RelayWebRTCDataChannelFactory(
+        signalingClient: RelayP2PSignalingClient(
+            relayBaseURL: URL(string: "https://relay.example.test")!,
+            httpClient: signalingHTTP
+        ),
+        configuration: WebRTCRuntimeConfiguration(iceServers: []),
+        runtime: runtime,
+        answerTimeout: .milliseconds(250),
+        dataChannelOpenTimeout: .seconds(1)
+    )
+
+    let completion = RelayWebRTCDataChannelOpenCompletionProbe()
+    let openTask = Task {
+        let transport = try await factory.openDataChannel(RelayP2PDataChannelOpenRequest(
+            relayHost: relayHost,
+            session: session
+        ))
+        await completion.markFinished()
+        return transport
+    }
+
+    try await signalingHTTP.waitForSentMessageCount(1)
+    try await runtime.waitForAppliedAnswerCount(1)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await completion.isFinished == false)
+
+    dataChannel.deliverState(.dataChannelOpen)
+    let opened = try await openTask.value
+    try await opened.send(Data("after-open".utf8))
+
+    #expect(dataChannel.sentMessages == [Data("after-open".utf8)])
+}
+
+@Test func relayWebRTCDataChannelFactoryKeepsWaitingAfterDirectFailureWhenTURNCanOpen() async throws {
     let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
     let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
     let sessionID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
@@ -267,14 +364,100 @@ import Testing
 
     try await signalingHTTP.waitForSentMessageCount(1)
     try await runtime.waitForAppliedAnswerCount(1)
+    dataChannel.deliverState(.directFailed(reason: "direct candidates timed out"))
     try await Task.sleep(for: .milliseconds(50))
     #expect(await completion.isFinished == false)
 
+    dataChannel.deliverState(.turnRelayedConnected)
     dataChannel.deliverState(.dataChannelOpen)
     let opened = try await openTask.value
-    try await opened.send(Data("after-open".utf8))
+    try await opened.send(Data("after-turn-open".utf8))
 
-    #expect(dataChannel.sentMessages == [Data("after-open".utf8)])
+    #expect(dataChannel.sentMessages == [Data("after-turn-open".utf8)])
+}
+
+@Test func relayWebRTCDataChannelFactoryContinuesApplyingRemoteICEWhileWaitingForDataChannelOpen() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let sessionID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
+    let session = RelayP2POpenSessionResponse(
+        sessionID: sessionID,
+        hostID: hostID,
+        deviceID: deviceID,
+        pairingRecordID: "pairing-\(hostID.uuidString)-\(deviceID.uuidString)",
+        selectedVersion: .v0_2_0,
+        openedAtUnixTime: 100
+    )
+    let relayHost = RelayHost(
+        hostAgentID: hostID,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: session.pairingRecordID,
+        deviceID: deviceID,
+        relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+        presence: .online(activeConnectionCount: 1),
+        diagnosticsSummary: "paired"
+    )
+    let remoteAnswer = WebRTCSessionDescriptionPayload(type: .answer, sdp: "v=0\r\nremote-answer")
+    let lateRemoteCandidate = WebRTCICECandidatePayload(
+        sdp: "candidate:late-srflx 1 udp 1686052607 203.0.113.10 54546 typ srflx",
+        sdpMid: "0",
+        sdpMLineIndex: 0
+    )
+    let signalingHTTP = RecordingRelayP2PSignalingHTTPClient(
+        remoteMessageBatches: [
+            [
+                RelayP2PSignalingMessageDTO(
+                    from: .host,
+                    to: .device,
+                    kind: .answer,
+                    payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(remoteAnswer)
+                ),
+            ],
+            [
+                RelayP2PSignalingMessageDTO(
+                    from: .host,
+                    to: .device,
+                    kind: .iceCandidate,
+                    payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(lateRemoteCandidate)
+                ),
+            ],
+        ]
+    )
+    let dataChannel = RecordingWebRTCDataChannelTransport(autoOpen: false)
+    let runtime = RecordingWebRTCOpeningRuntime(
+        result: WebRTCPlatformDataChannelOpenResult(
+            offer: WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\nlocal-offer"),
+            localICECandidates: [],
+            dataChannel: dataChannel
+        ),
+        onAddRemoteICECandidate: { _, _ in
+            dataChannel.deliverState(.dataChannelOpen)
+        }
+    )
+    let factory = RelayWebRTCDataChannelFactory(
+        signalingClient: RelayP2PSignalingClient(
+            relayBaseURL: URL(string: "https://relay.example.test")!,
+            httpClient: signalingHTTP
+        ),
+        configuration: WebRTCRuntimeConfiguration(iceServers: [
+            WebRTCICEServerConfiguration(urls: ["stun:stun.example.test:3478"]),
+        ]),
+        runtime: runtime,
+        answerTimeout: .milliseconds(250),
+        dataChannelOpenTimeout: .milliseconds(500),
+        remoteICEPollingDuration: .milliseconds(500)
+    )
+
+    let opened = try await factory.openDataChannel(RelayP2PDataChannelOpenRequest(
+        relayHost: relayHost,
+        session: session
+    ))
+    try await opened.send(Data("after-late-ice".utf8))
+
+    #expect(await runtime.appliedAnswers == [remoteAnswer])
+    #expect(await runtime.addedCandidates == [lateRemoteCandidate])
+    #expect(dataChannel.sentMessages == [Data("after-late-ice".utf8)])
 }
 
 @Test func relayWebRTCDataChannelFactoryTimesOutWhenHostNeverAnswers() async throws {
@@ -324,14 +507,192 @@ import Testing
     }
 }
 
+@Test func relayWebRTCDataChannelFactoryRestartsICEUsingSameSessionSignaling() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let sessionID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
+    let session = RelayP2POpenSessionResponse(
+        sessionID: sessionID,
+        hostID: hostID,
+        deviceID: deviceID,
+        pairingRecordID: "pairing-\(hostID.uuidString)-\(deviceID.uuidString)",
+        selectedVersion: .v0_2_0,
+        openedAtUnixTime: 100
+    )
+    let relayHost = RelayHost(
+        hostAgentID: hostID,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: session.pairingRecordID,
+        deviceID: deviceID,
+        relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+        presence: .online(activeConnectionCount: 1),
+        diagnosticsSummary: "paired"
+    )
+    let remoteAnswer = WebRTCSessionDescriptionPayload(type: .answer, sdp: "v=0\r\nrestart-answer")
+    let relayIssuedConfiguration = WebRTCRuntimeConfiguration(iceServers: [
+        WebRTCICEServerConfiguration(urls: ["stun:relay-issued.example.test:3478"]),
+        WebRTCICEServerConfiguration(
+            urls: ["turn:relay-issued.example.test:3478?transport=udp"],
+            username: "1600:pairing-record",
+            credential: "short-lived-turn-secret"
+        ),
+    ])
+    let signalingHTTP = RecordingRelayP2PSignalingHTTPClient(
+        remoteMessages: [
+            RelayP2PSignalingMessageDTO(
+                from: .host,
+                to: .device,
+                kind: .answer,
+                payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(remoteAnswer)
+            ),
+        ],
+        iceConfigurationResponse: RelayP2PICEConfigurationResponse(
+            configuration: relayIssuedConfiguration,
+            expiresAtUnixTime: 1_600
+        )
+    )
+    let existingDataChannel = RecordingWebRTCDataChannelTransport()
+    let restartedDataChannel = RecordingWebRTCDataChannelTransport()
+    let restartResult = WebRTCPlatformDataChannelOpenResult(
+        offer: WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\nrestart-offer"),
+        localICECandidates: [
+            WebRTCICECandidatePayload(
+                sdp: "candidate:restart-local 1 udp 2122260223 192.0.2.10 54545 typ host",
+                sdpMid: "0",
+                sdpMLineIndex: 0
+            ),
+        ],
+        dataChannel: restartedDataChannel
+    )
+    let runtime = RecordingWebRTCOpeningRuntime(
+        result: WebRTCPlatformDataChannelOpenResult(
+            offer: WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\nunused-open-offer"),
+            localICECandidates: [],
+            dataChannel: existingDataChannel
+        ),
+        restartResult: restartResult,
+        healthCheckResult: WebRTCDataChannelHealthCheckResult(
+            selectedCandidatePairPath: .direct,
+            pingPongSucceeded: true
+        )
+    )
+    let factory = RelayWebRTCDataChannelFactory(
+        signalingClient: RelayP2PSignalingClient(
+            relayBaseURL: URL(string: "https://relay.example.test")!,
+            httpClient: signalingHTTP
+        ),
+        configuration: WebRTCRuntimeConfiguration(iceServers: [
+            WebRTCICEServerConfiguration(urls: ["stun:fallback.example.test:3478"]),
+        ]),
+        runtime: runtime,
+        answerTimeout: .milliseconds(250)
+    )
+
+    let recovered = try await factory.restartICE(P2PConnectionRecoveryRequest(
+        relayHost: relayHost,
+        session: session,
+        threadID: "thread-1",
+        dataChannel: existingDataChannel,
+        preferDirect: true
+    ))
+
+    #expect(recovered.path == .direct)
+    #expect(recovered.dataChannel as? RecordingWebRTCDataChannelTransport === restartedDataChannel)
+    #expect(await runtime.restartConfigurations == [relayIssuedConfiguration])
+    #expect(await runtime.appliedAnswers == [remoteAnswer])
+    #expect(signalingHTTP.sentMessages.map(\.kind) == [.offer, .iceCandidate])
+    #expect(try RelayP2PWebRTCSignalingPayloadCodec.decodeSessionDescription(signalingHTTP.sentMessages[0].payload) == restartResult.offer)
+}
+
+@Test func relayWebRTCDataChannelFactoryDirectProbeRejectsRelayCandidatePair() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let session = RelayP2POpenSessionResponse(
+        sessionID: UUID(uuidString: "22222222-3333-4444-5555-666666666666")!,
+        hostID: hostID,
+        deviceID: deviceID,
+        pairingRecordID: "pairing-\(hostID.uuidString)-\(deviceID.uuidString)",
+        selectedVersion: .v0_2_0,
+        openedAtUnixTime: 100
+    )
+    let relayHost = RelayHost(
+        hostAgentID: hostID,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: session.pairingRecordID,
+        deviceID: deviceID,
+        relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+        presence: .online(activeConnectionCount: 1),
+        diagnosticsSummary: "paired"
+    )
+    let remoteAnswer = WebRTCSessionDescriptionPayload(type: .answer, sdp: "v=0\r\nprobe-answer")
+    let signalingHTTP = RecordingRelayP2PSignalingHTTPClient(
+        remoteMessages: [
+            RelayP2PSignalingMessageDTO(
+                from: .host,
+                to: .device,
+                kind: .answer,
+                payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(remoteAnswer)
+            ),
+        ]
+    )
+    let runtime = RecordingWebRTCOpeningRuntime(
+        result: WebRTCPlatformDataChannelOpenResult(
+            offer: WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\nprobe-offer"),
+            localICECandidates: [],
+            dataChannel: RecordingWebRTCDataChannelTransport()
+        ),
+        healthCheckResult: WebRTCDataChannelHealthCheckResult(
+            selectedCandidatePairPath: .relay,
+            pingPongSucceeded: true
+        )
+    )
+    let factory = RelayWebRTCDataChannelFactory(
+        signalingClient: RelayP2PSignalingClient(
+            relayBaseURL: URL(string: "https://relay.example.test")!,
+            httpClient: signalingHTTP
+        ),
+        configuration: WebRTCRuntimeConfiguration(iceServers: []),
+        runtime: runtime,
+        answerTimeout: .milliseconds(250)
+    )
+
+    await #expect(throws: WebRTCDataChannelTransportError.iceFailed(reason: "direct path probe did not validate a non-relay candidate pair")) {
+        _ = try await factory.probeDirectPath(P2PConnectionRecoveryRequest(
+            relayHost: relayHost,
+            session: session,
+            threadID: "thread-1",
+            dataChannel: RecordingWebRTCDataChannelTransport(),
+            preferDirect: true
+        ))
+    }
+}
+
 private actor RecordingWebRTCOpeningRuntime: WebRTCPlatformDataChannelOpening {
     private let result: WebRTCPlatformDataChannelOpenResult
+    private let restartResult: WebRTCPlatformDataChannelOpenResult?
+    private let healthCheckResult: WebRTCDataChannelHealthCheckResult
+    private let onAddRemoteICECandidate: @Sendable (WebRTCICECandidatePayload, WebRTCDataChannelTransport) async -> Void
     private(set) var openedSessions: [RelayP2POpenSessionResponse] = []
+    private(set) var openedConfigurations: [WebRTCRuntimeConfiguration] = []
+    private(set) var restartConfigurations: [WebRTCRuntimeConfiguration] = []
     private(set) var appliedAnswers: [WebRTCSessionDescriptionPayload] = []
     private(set) var addedCandidates: [WebRTCICECandidatePayload] = []
 
-    init(result: WebRTCPlatformDataChannelOpenResult) {
+    init(
+        result: WebRTCPlatformDataChannelOpenResult,
+        restartResult: WebRTCPlatformDataChannelOpenResult? = nil,
+        healthCheckResult: WebRTCDataChannelHealthCheckResult = WebRTCDataChannelHealthCheckResult(
+            selectedCandidatePairPath: .direct,
+            pingPongSucceeded: true
+        ),
+        onAddRemoteICECandidate: @escaping @Sendable (WebRTCICECandidatePayload, WebRTCDataChannelTransport) async -> Void = { _, _ in }
+    ) {
         self.result = result
+        self.restartResult = restartResult
+        self.healthCheckResult = healthCheckResult
+        self.onAddRemoteICECandidate = onAddRemoteICECandidate
     }
 
     func openDataChannel(
@@ -339,7 +700,23 @@ private actor RecordingWebRTCOpeningRuntime: WebRTCPlatformDataChannelOpening {
         configuration: WebRTCRuntimeConfiguration
     ) async throws -> WebRTCPlatformDataChannelOpenResult {
         openedSessions.append(session)
+        openedConfigurations.append(configuration)
         return result
+    }
+
+    func restartICE(
+        on dataChannel: WebRTCDataChannelTransport,
+        configuration: WebRTCRuntimeConfiguration
+    ) async throws -> WebRTCPlatformDataChannelOpenResult {
+        restartConfigurations.append(configuration)
+        return restartResult ?? result
+    }
+
+    func checkDirectPath(
+        on dataChannel: WebRTCDataChannelTransport,
+        requiredPingPongCount: Int
+    ) async throws -> WebRTCDataChannelHealthCheckResult {
+        healthCheckResult
     }
 
     func applyRemoteAnswer(
@@ -354,6 +731,7 @@ private actor RecordingWebRTCOpeningRuntime: WebRTCPlatformDataChannelOpening {
         to dataChannel: WebRTCDataChannelTransport
     ) async throws {
         addedCandidates.append(candidate)
+        await onAddRemoteICECandidate(candidate, dataChannel)
     }
 
     func waitForAddedCandidateCount(_ count: Int) async throws {
@@ -380,18 +758,33 @@ private actor RecordingWebRTCOpeningRuntime: WebRTCPlatformDataChannelOpening {
 private final class RecordingRelayP2PSignalingHTTPClient: RelayP2PSignalingHTTPClient, @unchecked Sendable {
     private let lock = NSLock()
     private var remoteMessageBatches: [[RelayP2PSignalingMessageDTO]]
+    private let iceConfigurationResponse: RelayP2PICEConfigurationResponse
     private var recordedSentMessages: [RelayP2PSignalingMessageDTO] = []
 
     var sentMessages: [RelayP2PSignalingMessageDTO] {
         lock.withLock { recordedSentMessages }
     }
 
-    init(remoteMessages: [RelayP2PSignalingMessageDTO]) {
+    init(
+        remoteMessages: [RelayP2PSignalingMessageDTO],
+        iceConfigurationResponse: RelayP2PICEConfigurationResponse = RelayP2PICEConfigurationResponse(
+            configuration: WebRTCRuntimeConfiguration(iceServers: []),
+            expiresAtUnixTime: 0
+        )
+    ) {
         remoteMessageBatches = [remoteMessages]
+        self.iceConfigurationResponse = iceConfigurationResponse
     }
 
-    init(remoteMessageBatches: [[RelayP2PSignalingMessageDTO]]) {
+    init(
+        remoteMessageBatches: [[RelayP2PSignalingMessageDTO]],
+        iceConfigurationResponse: RelayP2PICEConfigurationResponse = RelayP2PICEConfigurationResponse(
+            configuration: WebRTCRuntimeConfiguration(iceServers: []),
+            expiresAtUnixTime: 0
+        )
+    ) {
         self.remoteMessageBatches = remoteMessageBatches
+        self.iceConfigurationResponse = iceConfigurationResponse
     }
 
     func getPresence(hostID: UUID, deviceID: UUID, at url: URL) async throws -> RelayP2PPresenceResponse {
@@ -417,6 +810,13 @@ private final class RecordingRelayP2PSignalingHTTPClient: RelayP2PSignalingHTTPC
             selectedVersion: .v0_2_0,
             openedAtUnixTime: 100
         )
+    }
+
+    func getICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest,
+        at url: URL
+    ) async throws -> RelayP2PICEConfigurationResponse {
+        iceConfigurationResponse
     }
 
     func sendMessage(_ request: RelayP2PSendMessageRequest, at url: URL) async throws {

@@ -78,7 +78,7 @@ struct AddHostProfileView: View {
                 }
             } else {
                 Section("配对") {
-                    TextField("配对码或 QR 内容", text: $form.pairingMaterial)
+                    TextField("配对码", text: $form.pairingMaterial)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Button {
@@ -143,6 +143,9 @@ struct AddHostProfileView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .onAppear {
+            applyDefaultRelayDeviceDisplayName()
+        }
     }
 
     private var isEditing: Bool {
@@ -170,8 +173,17 @@ struct AddHostProfileView: View {
                 form.selectDirectSSHConnection()
             case .relay:
                 form.selectRelayConnection()
+                applyDefaultRelayDeviceDisplayName()
             }
         }
+    }
+
+    private func applyDefaultRelayDeviceDisplayName() {
+        guard !isEditing, connectionMethodSelection == .relay else { return }
+        guard form.deviceDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let deviceName = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !deviceName.isEmpty else { return }
+        form.deviceDisplayName = deviceName
     }
 
     @MainActor

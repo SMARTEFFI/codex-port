@@ -55,3 +55,54 @@ public enum WebRTCDataChannelJSONLFraming {
         return frames
     }
 }
+
+public enum WebRTCDataChannelHealthCheckMessage: Equatable, Sendable {
+    case ping(nonce: String)
+    case pong(nonce: String)
+}
+
+public enum WebRTCDataChannelHealthCheck {
+    public static let pingType = "codexport.p2p.health.ping"
+    public static let pongType = "codexport.p2p.health.pong"
+
+    public static func pingLine(nonce: String) throws -> String {
+        try encode(type: pingType, nonce: nonce)
+    }
+
+    public static func pongLine(nonce: String) throws -> String {
+        try encode(type: pongType, nonce: nonce)
+    }
+
+    public static func decodeLine(_ line: String) -> WebRTCDataChannelHealthCheckMessage? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = object["type"] as? String,
+              let nonce = object["nonce"] as? String,
+              !nonce.isEmpty else {
+            return nil
+        }
+        switch type {
+        case pingType:
+            return .ping(nonce: nonce)
+        case pongType:
+            return .pong(nonce: nonce)
+        default:
+            return nil
+        }
+    }
+
+    public static func decodeFrame(_ data: Data) -> WebRTCDataChannelHealthCheckMessage? {
+        guard let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .newlines) else {
+            return nil
+        }
+        return decodeLine(line)
+    }
+
+    private static func encode(type: String, nonce: String) throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: ["type": type, "nonce": nonce],
+            options: [.sortedKeys]
+        )
+        return String(decoding: data, as: UTF8.self)
+    }
+}

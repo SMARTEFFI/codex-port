@@ -69,6 +69,7 @@ import Testing
         presence: .online(activeConnectionCount: 0),
         diagnosticsSummary: "Host Agent online (0 clients)"
     ))
+    #expect(profile.connectionMethod.relayHost?.readiness == .ready(loadedThreadCount: 0))
 }
 
 @Test func relayHostPairingDraftBuilderPreservesUserEnteredHostProfileName() throws {

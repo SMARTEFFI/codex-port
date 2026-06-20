@@ -27,7 +27,17 @@ struct HostAgentP2PSignalingListenerTests {
     let dataChannel = ListenerRecordingDataChannelTransport()
     let signalingHTTP = ListenerRecordingP2PHTTPClient(hostMessages: [
         RelayP2PHostDrainedMessageDTO(session: session, message: offer)
-    ])
+    ], iceConfigurationResponse: RelayP2PICEConfigurationResponse(
+        configuration: WebRTCRuntimeConfiguration(iceServers: [
+            WebRTCICEServerConfiguration(urls: ["stun:relay-issued.example.test:3478"]),
+            WebRTCICEServerConfiguration(
+                urls: ["turn:relay-issued.example.test:3478?transport=udp"],
+                username: "1600:pairing-record",
+                credential: "short-lived-turn-secret"
+            ),
+        ]),
+        expiresAtUnixTime: 1_600
+    ))
     let acceptor = ListenerRecordingDataChannelAcceptor(
         response: HostAgentP2PAcceptResponse(
             answer: RelayP2PSignalingMessageDTO(
@@ -72,7 +82,7 @@ struct HostAgentP2PSignalingListenerTests {
             relayBaseURL: URL(string: "https://relay.example.test")!,
             httpClient: signalingHTTP
         ),
-        acceptor: acceptor,
+        acceptorFactory: ListenerRecordingDataChannelAcceptorFactory(acceptor: acceptor),
         service: service,
         pollInterval: .milliseconds(25),
         onEvent: { event in
@@ -94,8 +104,31 @@ struct HostAgentP2PSignalingListenerTests {
         hostPublicKeyBase64: Data("host-public-key".utf8).base64EncodedString()
     ))
     #expect(signalingHTTP.publishedPresenceURL == URL(string: "https://relay.example.test/v0/p2p/hosts/\(hostID.uuidString)/presence")!)
+    #expect(signalingHTTP.iceConfigurationURL == URL(string: "https://relay.example.test/v0/p2p/ice-config")!)
+    #expect(signalingHTTP.iceConfigurationRequest?.pairingRecordID == session.pairingRecordID)
     #expect(await acceptor.requests == [
-        HostAgentP2PAcceptRequest(session: session, offer: offer)
+        HostAgentP2PAcceptRequest(
+            session: session,
+            offer: offer,
+            iceConfiguration: WebRTCRuntimeConfiguration(iceServers: [
+                WebRTCICEServerConfiguration(urls: ["stun:relay-issued.example.test:3478"]),
+                WebRTCICEServerConfiguration(
+                    urls: ["turn:relay-issued.example.test:3478?transport=udp"],
+                    username: "1600:pairing-record",
+                    credential: "short-lived-turn-secret"
+                ),
+            ])
+        )
+    ])
+    #expect(await acceptor.receivedConfigurations == [
+        WebRTCRuntimeConfiguration(iceServers: [
+            WebRTCICEServerConfiguration(urls: ["stun:relay-issued.example.test:3478"]),
+            WebRTCICEServerConfiguration(
+                urls: ["turn:relay-issued.example.test:3478?transport=udp"],
+                username: "1600:pairing-record",
+                credential: "short-lived-turn-secret"
+            ),
+        ]),
     ])
     #expect(signalingHTTP.sentMessages == [
         .init(
@@ -129,7 +162,7 @@ struct HostAgentP2PSignalingListenerTests {
     #expect(recordedEvents.contains(.dataChannelAccepted(sessionID: session.sessionID, deviceID: deviceID)))
 }
 
-@Test func hostAgentP2PSignalingListenerIgnoresDuplicateOffersForAcceptedSession() async throws {
+@Test func hostAgentP2PSignalingListenerTreatsDuplicateOfferAsICERestartForAcceptedSession() async throws {
     let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
     let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
     let session = RelayP2POpenSessionResponse(
@@ -146,9 +179,78 @@ struct HostAgentP2PSignalingListenerTests {
         kind: .offer,
         payload: "sdp-offer"
     )
+    let restartOffer = RelayP2PSignalingMessageDTO(
+        from: .device,
+        to: .host,
+        kind: .offer,
+        payload: "sdp-restart-offer"
+    )
     let signalingHTTP = ListenerRecordingP2PHTTPClient(hostMessages: [
         RelayP2PHostDrainedMessageDTO(session: session, message: offer),
-        RelayP2PHostDrainedMessageDTO(session: session, message: offer),
+        RelayP2PHostDrainedMessageDTO(session: session, message: restartOffer),
+    ])
+    let acceptor = ListenerRecordingDataChannelAcceptor(
+        response: HostAgentP2PAcceptResponse(
+            answer: RelayP2PSignalingMessageDTO(from: .host, to: .device, kind: .answer, payload: "sdp-answer"),
+            iceCandidates: [],
+            dataChannel: ListenerRecordingDataChannelTransport()
+        )
+    )
+    let listener = HostAgentP2PSignalingListener(
+        hostID: hostID,
+        signalingClient: HostAgentP2PSignalingClient(
+            relayBaseURL: URL(string: "https://relay.example.test")!,
+            httpClient: signalingHTTP
+        ),
+        acceptor: acceptor,
+        service: HostAgentLocalRelayService(
+            commandFactory: { _ in HostAgentProcessCommand(executablePath: "/bin/false") }
+        ),
+        pollInterval: .milliseconds(10)
+    )
+
+    listener.start()
+    try await acceptor.waitForRequestCount(1)
+    try await acceptor.waitForRestartRequestCount(1)
+    listener.stop()
+
+    #expect(await acceptor.requests.count == 1)
+    #expect(await acceptor.restartRequests.map(\.offer) == [restartOffer])
+    #expect(signalingHTTP.sentMessages.map(\.message.kind) == [.answer, .answer])
+}
+
+@Test func hostAgentP2PSignalingListenerReplacesEndpointForRebuildOfferOnAcceptedSession() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let session = RelayP2POpenSessionResponse(
+        sessionID: UUID(uuidString: "22222222-3333-4444-5555-666666666666")!,
+        hostID: hostID,
+        deviceID: deviceID,
+        pairingRecordID: "pairing-\(hostID.uuidString)-\(deviceID.uuidString)",
+        selectedVersion: .v0_2_0,
+        openedAtUnixTime: 100
+    )
+    let initialOffer = RelayP2PSignalingMessageDTO(
+        from: .device,
+        to: .host,
+        kind: .offer,
+        payload: try RelayP2PWebRTCSignalingPayloadCodec.encodeOffer(
+            WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\ninitial-offer"),
+            intent: .openDataChannel
+        )
+    )
+    let rebuildOffer = RelayP2PSignalingMessageDTO(
+        from: .device,
+        to: .host,
+        kind: .offer,
+        payload: try RelayP2PWebRTCSignalingPayloadCodec.encodeOffer(
+            WebRTCSessionDescriptionPayload(type: .offer, sdp: "v=0\r\nrebuild-offer"),
+            intent: .openDataChannel
+        )
+    )
+    let signalingHTTP = ListenerRecordingP2PHTTPClient(hostMessages: [
+        RelayP2PHostDrainedMessageDTO(session: session, message: initialOffer),
+        RelayP2PHostDrainedMessageDTO(session: session, message: rebuildOffer),
     ])
     let acceptor = ListenerRecordingDataChannelAcceptor(
         response: HostAgentP2PAcceptResponse(
@@ -171,11 +273,13 @@ struct HostAgentP2PSignalingListenerTests {
 
     listener.start()
     try await acceptor.waitForRequestCount(1)
-    try await Task.sleep(for: .milliseconds(80))
+    await listener.pollOnce()
+    try await acceptor.waitForRequestCount(2)
     listener.stop()
 
-    #expect(await acceptor.requests.count == 1)
-    #expect(signalingHTTP.sentMessages.count == 1)
+    #expect(await acceptor.requests.map(\.offer) == [initialOffer, rebuildOffer])
+    #expect(await acceptor.restartRequests.isEmpty)
+    #expect(signalingHTTP.sentMessages.map(\.message.kind) == [.answer, .answer])
 }
 
 @Test func hostAgentP2PSignalingListenerForwardsTrickleICEInBothDirections() async throws {
@@ -411,8 +515,11 @@ private final class ListenerRecordingP2PHTTPClient: HostAgentP2PSignalingHTTPCli
     }
 
     private var hostMessages: [RelayP2PHostDrainedMessageDTO]
+    private let iceConfigurationResponse: RelayP2PICEConfigurationResponse
     private(set) var publishedPresenceRequest: RelayP2PHostPresencePublishRequest?
     private(set) var publishedPresenceURL: URL?
+    private(set) var iceConfigurationRequest: RelayP2PICEConfigurationRequest?
+    private(set) var iceConfigurationURL: URL?
     private(set) var drainURL: URL?
     private(set) var sendURLs: [URL] = []
     private var recordedSentMessages: [SentMessage] = []
@@ -421,8 +528,15 @@ private final class ListenerRecordingP2PHTTPClient: HostAgentP2PSignalingHTTPCli
         lock.withLock { recordedSentMessages }
     }
 
-    init(hostMessages: [RelayP2PHostDrainedMessageDTO]) {
+    init(
+        hostMessages: [RelayP2PHostDrainedMessageDTO],
+        iceConfigurationResponse: RelayP2PICEConfigurationResponse = RelayP2PICEConfigurationResponse(
+            configuration: WebRTCRuntimeConfiguration(iceServers: []),
+            expiresAtUnixTime: 0
+        )
+    ) {
         self.hostMessages = hostMessages
+        self.iceConfigurationResponse = iceConfigurationResponse
     }
 
     func publishHostPresence(
@@ -438,6 +552,17 @@ private final class ListenerRecordingP2PHTTPClient: HostAgentP2PSignalingHTTPCli
             presence: .online,
             activeConnectionCount: 0
         )
+    }
+
+    func getICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest,
+        at url: URL
+    ) async throws -> RelayP2PICEConfigurationResponse {
+        lock.withLock {
+            iceConfigurationRequest = request
+            iceConfigurationURL = url
+        }
+        return iceConfigurationResponse
     }
 
     func drainHostMessages(at url: URL) async throws -> RelayP2PDrainHostMessagesResponse {
@@ -482,9 +607,22 @@ private final class ListenerRecordingP2PHTTPClient: HostAgentP2PSignalingHTTPCli
     }
 }
 
+private struct ListenerRecordingDataChannelAcceptorFactory: HostAgentP2PDataChannelAcceptorFactory {
+    let acceptor: ListenerRecordingDataChannelAcceptor
+
+    func makeAcceptor(configuration: WebRTCRuntimeConfiguration) -> HostAgentP2PDataChannelAccepting {
+        Task {
+            await acceptor.record(configuration: configuration)
+        }
+        return acceptor
+    }
+}
+
 private actor ListenerRecordingDataChannelAcceptor: HostAgentP2PDataChannelAccepting {
     private(set) var requests: [HostAgentP2PAcceptRequest] = []
+    private(set) var restartRequests: [HostAgentP2PAcceptRequest] = []
     private(set) var remoteICEMessages: [ListenerRemoteICEMessage] = []
+    private(set) var receivedConfigurations: [WebRTCRuntimeConfiguration] = []
     private let response: HostAgentP2PAcceptResponse
 
     init(response: HostAgentP2PAcceptResponse) {
@@ -494,6 +632,18 @@ private actor ListenerRecordingDataChannelAcceptor: HostAgentP2PDataChannelAccep
     func accept(_ request: HostAgentP2PAcceptRequest) async throws -> HostAgentP2PAcceptResponse {
         requests.append(request)
         return response
+    }
+
+    func restartICE(
+        _ request: HostAgentP2PAcceptRequest,
+        dataChannel: WebRTCDataChannelTransport
+    ) async throws -> HostAgentP2PAcceptResponse {
+        restartRequests.append(request)
+        return response
+    }
+
+    func record(configuration: WebRTCRuntimeConfiguration) {
+        receivedConfigurations.append(configuration)
     }
 
     func addRemoteICECandidate(
@@ -507,6 +657,16 @@ private actor ListenerRecordingDataChannelAcceptor: HostAgentP2PDataChannelAccep
     func waitForRequestCount(_ count: Int) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(1))
         while requests.count < count {
+            if ContinuousClock.now >= deadline {
+                throw HostAgentP2PSignalingListenerTestError.timedOutWaitingForAcceptorRequest(count)
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func waitForRestartRequestCount(_ count: Int) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while restartRequests.count < count {
             if ContinuousClock.now >= deadline {
                 throw HostAgentP2PSignalingListenerTestError.timedOutWaitingForAcceptorRequest(count)
             }

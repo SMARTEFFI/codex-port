@@ -7,6 +7,10 @@ import CodexPortShared
 public protocol RelayP2PSignalingHTTPClient: Sendable {
     func getPresence(hostID: UUID, deviceID: UUID, at url: URL) async throws -> RelayP2PPresenceResponse
     func openSession(_ request: RelayP2POpenSessionRequest, at url: URL) async throws -> RelayP2POpenSessionResponse
+    func getICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest,
+        at url: URL
+    ) async throws -> RelayP2PICEConfigurationResponse
     func sendMessage(_ request: RelayP2PSendMessageRequest, at url: URL) async throws
     func drainMessages(at url: URL) async throws -> RelayP2PDrainMessagesResponse
 }
@@ -47,6 +51,23 @@ public struct RelayP2PSignalingClient: Sendable {
                 supportedVersions: supportedVersions
             ),
             at: p2pURL(pathComponents: ["sessions", "open"])
+        )
+    }
+
+    public func iceConfiguration(
+        hostID: UUID,
+        deviceID: UUID,
+        pairingRecordID: String,
+        supportedVersions: [RelayProtocolVersion] = [.v0_2_0]
+    ) async throws -> RelayP2PICEConfigurationResponse {
+        try await httpClient.getICEConfiguration(
+            RelayP2PICEConfigurationRequest(
+                hostID: hostID,
+                deviceID: deviceID,
+                pairingRecordID: pairingRecordID,
+                supportedVersions: supportedVersions
+            ),
+            at: p2pURL(pathComponents: ["ice-config"])
         )
     }
 
@@ -103,6 +124,13 @@ public struct URLSessionRelayP2PSignalingHTTPClient: RelayP2PSignalingHTTPClient
         try await post(request, to: url, decode: RelayP2POpenSessionResponse.self)
     }
 
+    public func getICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest,
+        at url: URL
+    ) async throws -> RelayP2PICEConfigurationResponse {
+        try await post(request, to: url, decode: RelayP2PICEConfigurationResponse.self)
+    }
+
     public func sendMessage(_ request: RelayP2PSendMessageRequest, at url: URL) async throws {
         _ = try await post(request, to: url)
     }
@@ -112,17 +140,24 @@ public struct URLSessionRelayP2PSignalingHTTPClient: RelayP2PSignalingHTTPClient
     }
 
     private func get<T: Decodable>(_ url: URL, decode type: T.Type) async throws -> T {
-        var request = URLRequest(url: url, timeoutInterval: 8)
-        request.httpMethod = "GET"
+        let request = Self.makeRequest(url: url, method: "GET")
         return try await response(for: request, decode: type)
     }
 
     private func post<T: Encodable>(_ value: T, to url: URL) async throws -> (status: Int, data: Data) {
-        var request = URLRequest(url: url, timeoutInterval: 8)
-        request.httpMethod = "POST"
+        var request = Self.makeRequest(url: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(value)
         return try await response(for: request)
+    }
+
+    static func makeRequest(url: URL, method: String) -> URLRequest {
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.httpMethod = method
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        return request
     }
 
     private func post<T: Encodable, U: Decodable>(_ value: T, to url: URL, decode type: U.Type) async throws -> U {

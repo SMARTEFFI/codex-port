@@ -17,7 +17,7 @@ import Testing
 
     #expect(first.state == .ready)
     #expect(first.pairingKey == "123-456")
-    #expect(first.qrPayload == "codexport://pair?token=pairing-token-menu")
+    #expect(first.qrPayload == "codexport://pair?token=pairing-token-menu&code=123-456")
     #expect(first.expiresAt == Date(timeIntervalSince1970: 1_600))
     #expect(first.publishRequest == RelayPairingPublishRequest(
         tokenID: "pairing-token-menu",
@@ -57,9 +57,24 @@ import Testing
     #expect(refreshed.tokenID == "pairing-token-refresh-2")
     #expect(refreshed.tokenID != first.tokenID)
     #expect(refreshed.pairingKey == "789-012")
-    #expect(refreshed.qrPayload == "codexport://pair?token=pairing-token-refresh-2")
+    #expect(refreshed.qrPayload == "codexport://pair?token=pairing-token-refresh-2&code=789-012")
     #expect(refreshed.expiresAt == Date(timeIntervalSince1970: 1_700))
     #expect(coordinator.copyPairingKey() == "789-012")
+}
+
+@Test func hostAgentMenuPairingCoordinatorIncludesHostNameInQRPayload() {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    var coordinator = HostAgentMenuPairingCoordinator(
+        hostID: hostID,
+        hostDisplayName: "Mac Studio",
+        now: { Date(timeIntervalSince1970: 1_000) },
+        tokenIDGenerator: { "pairing-token-menu" },
+        manualCodeGenerator: { "123-456" }
+    )
+
+    let snapshot = coordinator.startNewPairing(presentation: .manualAndQR)
+
+    #expect(snapshot.qrPayload == "codexport://pair?token=pairing-token-menu&code=123-456&hostName=Mac%20Studio")
 }
 
 @Test func hostAgentMenuPairingCoordinatorMarksExpiredAndCancelledStates() {

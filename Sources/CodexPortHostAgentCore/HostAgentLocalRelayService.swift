@@ -29,7 +29,7 @@ public struct HostAgentLocalRelayService: Sendable {
         threadStarter: HostAgentThreadStarting = HostAgentCodexAppServerThreadListProvider(),
         threadHistoryProvider: HostAgentThreadHistoryProviding = HostAgentCodexAppServerThreadListProvider(),
         remoteFileProvider: HostAgentRemoteFileProviding = HostAgentRemoteFileProvider(),
-        threadHistoryTimeout: Duration = .seconds(8)
+        threadHistoryTimeout: Duration = .seconds(20)
     ) {
         self.runtime = HostAgentLocalRelayRuntime(commandFactory: commandFactory)
         self.threadListProvider = threadListProvider
@@ -45,7 +45,7 @@ public struct HostAgentLocalRelayService: Sendable {
         threadStarter: HostAgentThreadStarting = HostAgentCodexAppServerThreadListProvider(),
         threadHistoryProvider: HostAgentThreadHistoryProviding = HostAgentCodexAppServerThreadListProvider(),
         remoteFileProvider: HostAgentRemoteFileProviding = HostAgentRemoteFileProvider(),
-        threadHistoryTimeout: Duration = .seconds(8)
+        threadHistoryTimeout: Duration = .seconds(20)
     ) {
         self.runtime = HostAgentLocalRelayRuntime(adapterFactory: adapterFactory)
         self.threadListProvider = threadListProvider
@@ -168,23 +168,35 @@ public struct HostAgentLocalRelayService: Sendable {
             let stream = try await runtime.attach(clientID: clientID, request: request)
             let threadHistoryProvider = self.threadHistoryProvider
             let threadHistoryTimeout = self.threadHistoryTimeout
-            Task {
-                guard let history = try? await Self.loadHistory(
-                    threadID: request.threadID,
-                    provider: threadHistoryProvider,
-                    timeout: threadHistoryTimeout
-                ) else { return }
-                if let outputLine = try? RelayEndpointJSONLCodec.encodeThreadHistoryPage(
-                    RelayThreadHistoryPage(
-                        requestID: "initial",
-                        threadID: history.threadID,
-                        items: history.items,
-                        status: history.status,
-                        nextCursor: history.nextCursor
-                    ),
-                    clientID: clientID
-                ) {
-                    await output(outputLine)
+            if request.loadInitialHistory {
+                Task {
+                    do {
+                        let history = try await Self.loadHistory(
+                            threadID: request.threadID,
+                            provider: threadHistoryProvider,
+                            timeout: threadHistoryTimeout
+                        )
+                        if let outputLine = try? RelayEndpointJSONLCodec.encodeThreadHistoryPage(
+                            RelayThreadHistoryPage(
+                                requestID: "initial",
+                                threadID: history.threadID,
+                                items: history.items,
+                                status: history.status,
+                                nextCursor: history.nextCursor
+                            ),
+                            clientID: clientID
+                        ) {
+                            await output(outputLine)
+                        }
+                    } catch {
+                        if let outputLine = try? HostAgentLocalRelayJSONLCodec.encodeError(
+                            Self.clientSafeHistoryLoadErrorMessage(for: error),
+                            clientID: clientID,
+                            includeReason: true
+                        ) {
+                            await output(outputLine)
+                        }
+                    }
                 }
             }
             Task {
@@ -233,5 +245,15 @@ public struct HostAgentLocalRelayService: Sendable {
             group.cancelAll()
             return snapshot
         }
+    }
+
+    private static func clientSafeHistoryLoadErrorMessage(for error: Error) -> String {
+        if case HostAgentThreadListProviderError.timedOut(method: "thread/resume") = error {
+            return "thread/resume timed out while loading initial history"
+        }
+        if case HostAgentThreadListProviderError.missingResponse(method: "thread/resume") = error {
+            return "thread/resume returned no initial history"
+        }
+        return "failed to load initial thread history"
     }
 }

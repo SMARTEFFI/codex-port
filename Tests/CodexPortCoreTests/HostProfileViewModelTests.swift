@@ -164,10 +164,36 @@ import Testing
     var form = HostProfileFormModel()
     form.pairingMaterial = "existing-token"
 
+    let applied = form.applyScannedPairingMaterial(
+        "codexport://pair?token=pairing-token-ios&code=123-456&hostName=Mac%20Studio"
+    )
+
+    #expect(applied == true)
+    #expect(form.pairingMaterial == "123-456")
+    #expect(form.name == "Mac Studio")
+    #expect(try form.makeRelayPairingInput(defaultDeviceDisplayName: "iPhone").pairingTokenID == "123-456")
+}
+
+@Test func hostProfileFormPreservesExistingNameWhenApplyingPairingScanHostMetadata() {
+    var form = HostProfileFormModel()
+    form.name = "My Mac"
+
+    let applied = form.applyScannedPairingMaterial(
+        "codexport://pair?token=pairing-token-ios&code=123-456&hostName=Mac%20Studio"
+    )
+
+    #expect(applied == true)
+    #expect(form.pairingMaterial == "123-456")
+    #expect(form.name == "My Mac")
+}
+
+@Test func hostProfileFormAppliesLegacyPairingQRTokenWhenCodeIsMissing() throws {
+    var form = HostProfileFormModel()
+
     let applied = form.applyScannedPairingMaterial("codexport://pair?token=pairing-token-ios")
 
     #expect(applied == true)
-    #expect(form.pairingMaterial == "codexport://pair?token=pairing-token-ios")
+    #expect(form.pairingMaterial == "pairing-token-ios")
     #expect(try form.makeRelayPairingInput(defaultDeviceDisplayName: "iPhone").pairingTokenID == "pairing-token-ios")
 }
 

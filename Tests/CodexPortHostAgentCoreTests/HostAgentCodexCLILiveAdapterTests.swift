@@ -133,6 +133,36 @@ import Testing
     ])
 }
 
+@Test func codexCLILiveAdapterReportsProducerStartFailureReason() async throws {
+    let producer = FakeCodexCLILiveProducer()
+    await producer.failStart(reason: "thread/resume failed: thread not found")
+    let adapter = HostAgentCodexCLILiveAdapter(
+        session: CodexCLILiveSessionDescriptor(
+            sessionID: "desktop-live-session",
+            threadID: "codex-thread-1",
+            turnID: "turn-1"
+        ),
+        producer: producer
+    )
+    let bridge = HostAgentLiveSessionBridge(adapter: adapter)
+    var subscriber = bridge.subscribe().makeAsyncIterator()
+
+    try bridge.start()
+    defer {
+        bridge.stop()
+    }
+
+    #expect(await subscriber.next() == .turnFailed(
+        turnID: "turn-1",
+        reason: "Codex CLI live producer failed to start: thread/resume failed: thread not found"
+    ))
+
+    let write = RelayLiveSessionWrite.prompt(writeID: "write-1", threadID: "codex-thread-1", text: "Hi")
+    #expect(await bridge.enqueue(write) == .failed(
+        reason: "Codex CLI live producer failed to start: thread/resume failed: thread not found"
+    ))
+}
+
 @Test func liveSessionBridgeStopsCodexCLILiveAdapterProducer() async throws {
     let producer = FakeCodexCLILiveProducer()
     let adapter = HostAgentCodexCLILiveAdapter(
@@ -309,6 +339,50 @@ import Testing
     #expect(await promptTask.value == .accepted)
 }
 
+@Test func appServerControlSocketLiveProducerDefersFreshThreadResumeUntilAfterFirstTurnStart() async throws {
+    let transport = RecordingCodexAppServerControlTransport()
+    let producer = CodexAppServerControlSocketLiveProducer(transport: transport)
+    var events = await producer.events().makeAsyncIterator()
+    let session = CodexCLILiveSessionDescriptor(
+        sessionID: "fresh-session",
+        threadID: "fresh-thread",
+        turnID: "fresh-turn",
+        resumeThreadOnStart: false
+    )
+
+    try await producer.start(session: session)
+
+    #expect(await events.next() == .sessionOpened(session))
+    #expect(await transport.requests.map(\.method) == ["initialize"])
+
+    let promptTask = Task {
+        await producer.submitPrompt(CodexCLILivePrompt(writeID: "write-1", threadID: "fresh-thread", text: "First prompt"))
+    }
+    await transport.waitForRequest(method: "turn/start")
+    await transport.waitForRequest(method: "thread/resume")
+    let requests = await transport.requests
+    #expect(requests.map(\.method) == ["initialize", "turn/start", "thread/resume"])
+    #expect(requests[safe: 1]?.params.object?["threadId"]?.string == "fresh-thread")
+    #expect(requests[safe: 2]?.params.object?["threadId"]?.string == "fresh-thread")
+    #expect(requests[safe: 2]?.params.object?["excludeTurns"]?.bool == true)
+    #expect(await promptTask.value == .accepted)
+
+    await transport.deliver(ControlJSONRPCNotification(
+        method: "item/agentMessage/delta",
+        params: .object([
+            "turnId": .string("turn-fresh"),
+            "itemId": .string("item-agent"),
+            "delta": .string("收到"),
+        ])
+    ))
+    await transport.deliver(ControlJSONRPCNotification(
+        method: "turn/completed",
+        params: .object(["turnId": .string("turn-fresh")])
+    ))
+    #expect(await events.next() == .assistantTextDelta(turnID: "turn-fresh", itemID: "item-agent", text: "收到"))
+    #expect(await events.next() == .turnCompleted(turnID: "turn-fresh"))
+}
+
 @Test func appServerControlSocketLiveProducerMapsCommandExecutionStartedToActualCommand() async throws {
     let transport = RecordingCodexAppServerControlTransport()
     let producer = CodexAppServerControlSocketLiveProducer(transport: transport)
@@ -415,6 +489,7 @@ private actor FakeCodexCLILiveProducer: CodexCLILiveProducing {
     private var promptContinuation: CheckedContinuation<CodexCLILiveProducerWriteResult, Never>?
     private var promptSubmittedContinuation: CheckedContinuation<Void, Never>?
     private var shouldHoldStart = false
+    private var startFailureReason: String?
     private var startEntered = false
     private var startEnteredContinuation: CheckedContinuation<Void, Never>?
     private var startReleaseContinuation: CheckedContinuation<Void, Never>?
@@ -435,6 +510,9 @@ private actor FakeCodexCLILiveProducer: CodexCLILiveProducing {
             await withCheckedContinuation { continuation in
                 startReleaseContinuation = continuation
             }
+        }
+        if let startFailureReason {
+            throw CodexAppServerControlProducerError.requestFailed(startFailureReason)
         }
         sessions.append(session)
         continuation?.yield(.sessionOpened(session))
@@ -473,6 +551,10 @@ private actor FakeCodexCLILiveProducer: CodexCLILiveProducing {
         shouldHoldStart = false
         startReleaseContinuation?.resume()
         startReleaseContinuation = nil
+    }
+
+    func failStart(reason: String) {
+        startFailureReason = reason
     }
 
     func waitUntilStartEntered() async {

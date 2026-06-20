@@ -35,7 +35,12 @@ final class AppConnectionState: ObservableObject {
     private var connectedRelayHost: RelayHost?
     private var connectedRelayDefaultDirectory: String?
     private var connectedRelaySessionRegistry: RelaySessionContextRegistry?
+    private var relayArchiveStateStore: WorkspaceArchiveStateStore?
     private var relayWorkspaceReloadTask: Task<Void, Never>?
+    private var archivedThreadIDs: Set<String> = []
+
+    private static let relayInitialThreadListLimit = 20
+    private static let relayRefreshThreadListLimit = 100
 
     init(
         credentialVault: CredentialVault,
@@ -80,16 +85,23 @@ final class AppConnectionState: ObservableObject {
     ) -> RelaySessionRouteBuilder.TransportFactory {
         RelayConnectionTransportFactory(
             mode: mode,
-            webRTCConfiguration: WebRTCRuntimeConfigurationEnvironment.makeOrDefault(environment: environment)
+            webRTCConfiguration: WebRTCRuntimeConfigurationEnvironment.makeOrDefault(
+                environment: environment,
+                relayBaseURL: RelayHostProductionPairingInput.productionRelayBaseURL
+            )
         ).makeTransport(for:)
     }
 
     func connect(profile: HostProfile) async {
+        guard !isConnecting else { return }
         if canReuseConnection(for: profile) {
             isConnectionLogPresented = false
             errorMessage = nil
             return
         }
+        relayWorkspaceReloadTask?.cancel()
+        relayWorkspaceReloadTask = nil
+        isReloadingWorkspaces = false
         clearConnectionStateIfSwitchingHost(to: profile)
         await connect(profile: profile, unknownHostDecision: .rejectUnknownHost, resetLog: true)
     }
@@ -180,7 +192,8 @@ final class AppConnectionState: ObservableObject {
             let store = WorkspaceListStore(
                 protocolClient: connected.protocolClient,
                 grouping: grouping,
-                readStateStore: UserDefaultsWorkspaceReadStateStore(namespace: profile.id.uuidString)
+                readStateStore: UserDefaultsWorkspaceReadStateStore(namespace: profile.id.uuidString),
+                archiveStateStore: UserDefaultsWorkspaceArchiveStateStore(namespace: profile.id.uuidString)
             )
             try await store.reload(limit: 100)
             workspaceStore = store
@@ -215,31 +228,17 @@ final class AppConnectionState: ObservableObject {
         session = nil
         workspaceStore = nil
         remoteBrowserStore = nil
+        relayArchiveStateStore = UserDefaultsWorkspaceArchiveStateStore(namespace: profile.id.uuidString)
+        archivedThreadIDs = (try? relayArchiveStateStore?.loadArchivedThreadIDs()) ?? []
         connectionProgressMessage = "打开 Relay transport..."
         appendConnectionLog("正在打开 Relay transport。")
         guard relayTransportFactory(relayHost) != nil else {
             throw RelayJSONLThreadListClientError.transportUnavailable
         }
         if connectedRelaySessionRegistry == nil {
-            connectedRelaySessionRegistry = RelaySessionContextRegistry(
-                allowedThreadIDs: [],
-                storeFactory: { threadID in
-                    SessionStore(protocolClient: RelaySessionPlaceholderProtocolClient(threadID: threadID))
-                },
-                clientFactory: { [relayTransportFactory] thread, sessionStore in
-                    guard let transport = relayTransportFactory(relayHost) else {
-                        return nil
-                    }
-                    return RelayJSONLSessionClient(
-                        clientID: relayHost.pairingRecordID,
-                        sessionID: thread.id,
-                        threadID: thread.id,
-                        turnID: "\(thread.id)-turn",
-                        cwd: thread.cwd,
-                        transport: transport,
-                        sessionStore: sessionStore
-                    )
-                }
+            connectedRelaySessionRegistry = RelaySessionRouteBuilder.sessionRegistry(
+                relayHost: relayHost,
+                makeTransport: relayTransportFactory
             )
         }
         let profileKey = HostProfileConnectionReuseKey(profile: profile)
@@ -257,7 +256,7 @@ final class AppConnectionState: ObservableObject {
                         self?.recordRelayThreadListProgress(event)
                     }
                 }
-            ).connect()
+            ).connect(limit: Self.relayInitialThreadListLimit)
         } catch {
             throw error
         }
@@ -313,6 +312,7 @@ final class AppConnectionState: ObservableObject {
         remoteBrowserStore = nil
         connectedRelayHost = nil
         connectedRelayDefaultDirectory = nil
+        relayArchiveStateStore = nil
         connectedRelaySessionRegistry?.stopAll()
         connectedRelaySessionRegistry = nil
         hasLoadedRelayThreadList = false
@@ -389,20 +389,12 @@ final class AppConnectionState: ObservableObject {
             }
         }
         do {
-            guard let listTransport = relayTransportFactory(relayHost) else {
-                throw RelayJSONLThreadListClientError.transportUnavailable
-            }
             connectionProgressMessage = "等待 HostAgent 返回会话列表..."
             appendConnectionLog("后台请求 HostAgent 会话列表。")
-            let threadSnapshots = try await RelayJSONLThreadListClient(
-                clientID: relayHost.pairingRecordID,
-                transport: listTransport,
-                progressObserver: { [weak self] event in
-                    await MainActor.run {
-                        self?.recordRelayThreadListProgress(event)
-                    }
-                }
-            ).listThreads()
+            let threadSnapshots = try await loadRelayThreadSnapshotsWithRetry(
+                relayHost: relayHost,
+                limit: Self.relayRefreshThreadListLimit
+            )
             guard connectedProfileKey == profileKey else { return }
             publishRelayThreadSnapshots(
                 threadSnapshots,
@@ -423,6 +415,39 @@ final class AppConnectionState: ObservableObject {
         }
     }
 
+    private func loadRelayThreadSnapshotsWithRetry(
+        relayHost: RelayHost,
+        limit: Int
+    ) async throws -> [RelayThreadSummarySnapshot] {
+        do {
+            return try await loadRelayThreadSnapshots(relayHost: relayHost, limit: limit)
+        } catch {
+            guard RelayJSONLSessionClientManager.shouldRecreateClient(after: error) else {
+                throw error
+            }
+            appendConnectionLog("Relay transport 已断开，正在重新建立 HostAgent DataChannel。", level: .warning)
+            return try await loadRelayThreadSnapshots(relayHost: relayHost, limit: limit)
+        }
+    }
+
+    private func loadRelayThreadSnapshots(
+        relayHost: RelayHost,
+        limit: Int
+    ) async throws -> [RelayThreadSummarySnapshot] {
+        guard let listTransport = relayTransportFactory(relayHost) else {
+            throw RelayJSONLThreadListClientError.transportUnavailable
+        }
+        return try await RelayJSONLThreadListClient(
+            clientID: relayHost.pairingRecordID,
+            transport: listTransport,
+            progressObserver: { [weak self] event in
+                await MainActor.run {
+                    self?.recordRelayThreadListProgress(event)
+                }
+            }
+        ).listThreads(limit: limit)
+    }
+
     private func publishRelayThreadSnapshots(
         _ threadSnapshots: [RelayThreadSummarySnapshot],
         profileDefaultDirectory: String,
@@ -436,6 +461,7 @@ final class AppConnectionState: ObservableObject {
             makeTransport: relayTransportFactory
         )
         let summaries = route.relayThreadSummaries
+            .filter { !archivedThreadIDs.contains($0.id) }
         connectedRoute = route
         let index = WorkspaceIndex(threads: summaries)
         projects = index.projects()
@@ -452,6 +478,22 @@ final class AppConnectionState: ObservableObject {
         } catch {
             errorMessage = String(describing: error)
         }
+    }
+
+    func archiveThread(_ threadID: String) {
+        archivedThreadIDs.insert(threadID)
+        try? relayArchiveStateStore?.saveArchivedThreadIDs(archivedThreadIDs)
+        if let workspaceStore {
+            workspaceStore.archiveThread(id: threadID)
+            publishWorkspaceStoreState()
+            return
+        }
+        let summaries = recentThreads.filter { $0.id != threadID }
+        let index = WorkspaceIndex(threads: summaries)
+        projects = index.projects()
+        projectThreadGroups = index.projectThreadGroups(limit: 5)
+        dayThreadGroups = AppConnectionState.dayThreadGroups(for: index.recentThreads())
+        recentThreads = index.recentThreads()
     }
 
     func startThread(cwd: String) async -> String? {
@@ -472,7 +514,9 @@ final class AppConnectionState: ObservableObject {
             ).startThread(cwd: cwd)
             workspaceStore?.upsertLocalThread(id: threadID, cwd: cwd, preview: "新会话")
             publishWorkspaceStoreState()
-            await reloadWorkspaces()
+            Task { [weak self] in
+                await self?.reloadWorkspaces()
+            }
             return threadID
         } catch {
             errorMessage = String(describing: error)
@@ -492,7 +536,7 @@ final class AppConnectionState: ObservableObject {
             return nil
         }
         do {
-            let snapshot = try await context.clientManager.startThread(cwd: cwd)
+            let snapshot = try await context.clientManager.startThreadDetached(cwd: cwd)
             let summary = ThreadSummary(relaySnapshot: snapshot)
             self.connectedRoute = connectedRoute.appendingRelayThread(summary)
             let index = WorkspaceIndex(threads: self.connectedRoute?.relayThreadSummaries ?? recentThreads)
@@ -607,12 +651,24 @@ final class AppConnectionState: ObservableObject {
         if case let JSONRPCCodecError.invalidMessage(rawMessage) = error {
             return "Codex app-server 返回了非 JSON-RPC 消息：\(rawMessage)"
         }
+        if let webRTC = error as? WebRTCDataChannelTransportError {
+            switch webRTC {
+            case .dataChannelNotOpen:
+                return "无法建立 HostAgent WebRTC DataChannel。请确认 Mac 端 HostAgent 在线；如果 iPhone 与 HostAgent 不在同一内网，请确认 TURN relay 可用后重试。"
+            case .dataChannelClosed:
+                return "HostAgent WebRTC DataChannel 已关闭。请确认 Mac 端 HostAgent 在线后重试。"
+            case let .iceFailed(reason):
+                return "HostAgent WebRTC ICE 连接失败：\(reason)。如果 iPhone 与 HostAgent 不在同一内网，请确认 TURN relay 可用。"
+            case let .signalingFailed(message):
+                return "HostAgent WebRTC 信令失败：\(message)"
+            }
+        }
         if let relayList = error as? RelayJSONLThreadListClientError {
             switch relayList {
             case .transportUnavailable:
                 return "配对连接入口不可用。请重新配对或检查 Host 配置。"
             case .timedOut:
-                return "读取 HostAgent 会话列表超时。请确认 HostAgent 菜单应用在线后重试。"
+                return "读取 HostAgent 会话列表超时。请确认 HostAgent 菜单应用在线；如果 iPhone 与 HostAgent 不在同一内网，请确认 TURN relay 可用后重试。"
             case let .hostAgentError(reason):
                 if reason.isEmpty {
                     return "HostAgent 读取 Codex 会话列表失败。请确认本机 Codex CLI 可运行。"

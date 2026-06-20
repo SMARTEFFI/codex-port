@@ -403,6 +403,15 @@ public final class RelayPublicWebSocketService: @unchecked Sendable {
                 } catch {
                     return (Self.p2pStatus(for: error), Data())
                 }
+            case (.POST, "/v0/p2p/ice-config"):
+                var body = body
+                let data = Data(body.readBytes(length: body.readableBytes) ?? [])
+                let request = try JSONDecoder().decode(RelayP2PICEConfigurationRequest.self, from: data)
+                do {
+                    return (.ok, try JSONEncoder().encode(try await gateway.issueP2PICEConfiguration(request)))
+                } catch {
+                    return (Self.p2pStatus(for: error), Data())
+                }
             case let (.POST, path) where Self.p2pSendMessagePathSessionID(from: path) != nil:
                 guard let sessionID = Self.p2pSendMessagePathSessionID(from: path) else {
                     return (.badRequest, Data())
@@ -445,6 +454,9 @@ public final class RelayPublicWebSocketService: @unchecked Sendable {
     ) async throws {
         var headers = HTTPHeaders()
         headers.add(name: "Connection", value: "close")
+        headers.add(name: "Cache-Control", value: "no-store")
+        headers.add(name: "Pragma", value: "no-cache")
+        headers.add(name: "Expires", value: "0")
         headers.add(name: "Content-Length", value: "\(body.count)")
         if !body.isEmpty {
             headers.add(name: "Content-Type", value: "application/json")

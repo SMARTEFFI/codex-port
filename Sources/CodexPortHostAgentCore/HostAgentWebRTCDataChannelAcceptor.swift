@@ -24,9 +24,32 @@ public struct HostAgentWebRTCDataChannelAcceptor: HostAgentP2PDataChannelAccepti
         let accepted = try await runtime.acceptDataChannel(
             offer: offer,
             session: request.session,
-            configuration: configuration
+            configuration: request.iceConfiguration ?? configuration
         )
-        return HostAgentP2PAcceptResponse(
+        return try Self.response(from: accepted)
+    }
+
+    public func restartICE(
+        _ request: HostAgentP2PAcceptRequest,
+        dataChannel: WebRTCDataChannelTransport
+    ) async throws -> HostAgentP2PAcceptResponse {
+        let offer: WebRTCSessionDescriptionPayload
+        do {
+            offer = try RelayP2PWebRTCSignalingPayloadCodec.decodeSessionDescription(request.offer.payload)
+        } catch {
+            throw WebRTCPlatformRuntimeError.invalidOfferPayload
+        }
+        let accepted = try await runtime.restartICE(
+            offer: offer,
+            session: request.session,
+            configuration: request.iceConfiguration ?? configuration,
+            dataChannel: dataChannel
+        )
+        return try Self.response(from: accepted)
+    }
+
+    private static func response(from accepted: WebRTCPlatformDataChannelAcceptResult) throws -> HostAgentP2PAcceptResponse {
+        HostAgentP2PAcceptResponse(
             answer: RelayP2PSignalingMessageDTO(
                 from: .host,
                 to: .device,
@@ -84,5 +107,17 @@ public struct HostAgentWebRTCDataChannelAcceptor: HostAgentP2PDataChannelAccepti
                 task.cancel()
             }
         }
+    }
+}
+
+public struct HostAgentWebRTCDataChannelAcceptorFactory: HostAgentP2PDataChannelAcceptorFactory {
+    private let runtime: WebRTCPlatformDataChannelAccepting
+
+    public init(runtime: WebRTCPlatformDataChannelAccepting = DefaultWebRTCPlatformDataChannelRuntime.makeAcceptingRuntime()) {
+        self.runtime = runtime
+    }
+
+    public func makeAcceptor(configuration: WebRTCRuntimeConfiguration) -> HostAgentP2PDataChannelAccepting {
+        HostAgentWebRTCDataChannelAcceptor(configuration: configuration, runtime: runtime)
     }
 }

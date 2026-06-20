@@ -49,6 +49,11 @@ import Testing
     process.environment = [
         "CODEXPORT_HOST_AGENT_MENU_SMOKE": "1",
         "CODEXPORT_HOST_AGENT_MENU_SMOKE_EXIT_AFTER_SECONDS": "0.2",
+        "CODEXPORT_HOST_AGENT_P2P_LISTEN": "1",
+        "CODEXPORT_RELAY_BASE_URL": "http://127.0.0.1:9",
+        "CODEXPORT_RELAY_HOST_ID": "11111111-2222-3333-4444-555555555555",
+        "CODEXPORT_RELAY_HOST_NAME": "Smoke Mac",
+        "CODEXPORT_RELAY_HOST_USER": "smoke",
     ]
     let stdout = Pipe()
     process.standardOutput = stdout
@@ -66,6 +71,7 @@ import Testing
 
     #expect(process.isRunning == false)
     #expect(output.contains("CodexPort Host Agent menu app started"))
+    #expect(output.contains("CodexPort Host Agent P2P listener starting"))
 }
 
 private func packageRoot(filePath: String = #filePath) -> URL {

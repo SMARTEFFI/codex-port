@@ -37,14 +37,17 @@ public struct RelayConnectionTransportFactory: Sendable {
         webSocketFactory: RelayWebSocketTransportFactory = RelayWebSocketTransportFactory(),
         signalingHTTPClient: any RelayP2PSignalingHTTPClient = URLSessionRelayP2PSignalingHTTPClient(),
         dataChannelFactory: (any RelayP2PDataChannelFactory)? = nil,
-        webRTCConfiguration: WebRTCRuntimeConfiguration = WebRTCRuntimeConfiguration(iceServers: [])
+        webRTCConfiguration: WebRTCRuntimeConfiguration? = nil
     ) {
         self.mode = mode
         self.relayBaseURL = relayBaseURL
         self.webSocketFactory = webSocketFactory
         self.signalingHTTPClient = signalingHTTPClient
         self.dataChannelFactory = dataChannelFactory
-        self.webRTCConfiguration = webRTCConfiguration
+        self.webRTCConfiguration = webRTCConfiguration ?? WebRTCRuntimeConfigurationEnvironment.makeOrDefault(
+            environment: [:],
+            relayBaseURL: relayBaseURL
+        )
     }
 
     public func makeTransport(for relayHost: RelayHost) -> RelayJSONLTransport? {
@@ -65,5 +68,9 @@ public struct RelayConnectionTransportFactory: Sendable {
                 dataChannelFactory: dataChannelFactory
             ).makeDeferredTransport(for: relayHost)
         }
+    }
+
+    var webRTCConfigurationForTesting: WebRTCRuntimeConfiguration {
+        webRTCConfiguration
     }
 }

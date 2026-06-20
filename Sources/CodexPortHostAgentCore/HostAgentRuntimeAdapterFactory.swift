@@ -96,7 +96,8 @@ public enum HostAgentRuntimeAdapterFactory {
                         session: CodexCLILiveSessionDescriptor(
                             sessionID: request.sessionID,
                             threadID: request.threadID,
-                            turnID: request.turnID
+                            turnID: request.turnID,
+                            resumeThreadOnStart: request.resumeLiveSession
                         ),
                         producer: CodexAppServerControlSocketLiveProducer(
                             transport: CodexAppServerControlWebSocketTransport(
@@ -104,7 +105,8 @@ public enum HostAgentRuntimeAdapterFactory {
                             )
                         )
                     ),
-                    description: "Codex CLI live adapter"
+                    description: "Codex CLI live adapter",
+                    metadata: ["resumeThreadOnStart": String(request.resumeLiveSession)]
                 )
             }
         }

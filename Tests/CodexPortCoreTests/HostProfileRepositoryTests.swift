@@ -142,10 +142,7 @@ import Testing
     #expect(loaded?.name == profile.name)
     #expect(loaded?.connectionMethod.relayHost?.pairingRecordID == "pairing-record")
     #expect(loaded?.connectionMethod.relayHost?.relayEndpointURL == URL(string: "wss://relay.example.test/v0/streams")!)
-    #expect(loaded?.connectionMethod.relayHost?.readiness == .failed(
-        reason: .threadListTimeout,
-        message: "上次读取会话未完成，点按重试"
-    ))
+    #expect(loaded?.connectionMethod.relayHost?.readiness == .ready(loadedThreadCount: 0))
 }
 
 @Test func persistentHostProfileStorePersistsRelayHostReadinessUpdates() throws {

@@ -6,6 +6,51 @@ public enum RelayHostProductionPairingInputError: Error, Equatable, Sendable {
     case missingPairingToken
 }
 
+public struct RelayPairingScannedMaterial: Equatable, Sendable {
+    public var pairingCode: String
+    public var hostDisplayName: String?
+
+    public init(pairingCode: String, hostDisplayName: String? = nil) {
+        self.pairingCode = pairingCode
+        self.hostDisplayName = hostDisplayName
+    }
+
+    public static func parse(_ value: String) throws -> RelayPairingScannedMaterial {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed),
+           url.scheme == "codexport",
+           url.host == "pair",
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            let queryItems = components.queryItems ?? []
+            let code = firstNonEmptyQueryValue(named: "code", in: queryItems)
+            let token = firstNonEmptyQueryValue(named: "token", in: queryItems)
+            guard let pairingCode = code ?? token else {
+                throw RelayHostProductionPairingInputError.missingPairingToken
+            }
+            return RelayPairingScannedMaterial(
+                pairingCode: pairingCode,
+                hostDisplayName: firstNonEmptyQueryValue(named: "hostName", in: queryItems)
+                    ?? firstNonEmptyQueryValue(named: "hostDisplayName", in: queryItems)
+            )
+        }
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("codexport://") else {
+            throw RelayHostProductionPairingInputError.missingPairingToken
+        }
+        return RelayPairingScannedMaterial(pairingCode: trimmed)
+    }
+
+    private static func firstNonEmptyQueryValue(
+        named name: String,
+        in queryItems: [URLQueryItem]
+    ) -> String? {
+        queryItems
+            .first(where: { $0.name == name })?
+            .value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty
+    }
+}
+
 public struct RelayHostProductionPairingInput: Equatable, Sendable {
     public static let productionRelayBaseURL = URL(string: "https://codexport.smarteffi.net")!
 
@@ -88,18 +133,12 @@ public struct RelayHostProductionPairingInput: Equatable, Sendable {
     }
 
     private static func parsePairingTokenID(_ value: String) throws -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let url = URL(string: trimmed),
-           url.scheme == "codexport",
-           url.host == "pair",
-           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-           let token = components.queryItems?.first(where: { $0.name == "token" })?.value,
-           !token.isEmpty {
-            return token
-        }
-        guard !trimmed.isEmpty, !trimmed.hasPrefix("codexport://") else {
-            throw RelayHostProductionPairingInputError.missingPairingToken
-        }
-        return trimmed
+        try RelayPairingScannedMaterial.parse(value).pairingCode
+    }
+}
+
+private extension String {
+    var nonEmpty: String? {
+        isEmpty ? nil : self
     }
 }

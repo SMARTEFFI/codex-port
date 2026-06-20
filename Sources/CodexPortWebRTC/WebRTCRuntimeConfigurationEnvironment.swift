@@ -2,9 +2,16 @@ import Foundation
 import CodexPortShared
 
 public enum WebRTCRuntimeConfigurationEnvironment {
+    public static let productionRelayBaseURL = URL(string: "https://codexport.smarteffi.net")!
+
+    public static let defaultICEServers = [
+        WebRTCICEServerConfiguration(urls: ["stun:codexport.smarteffi.net:3478"]),
+    ]
+
     public static func make(
         environment: [String: String],
-        defaultDataChannelLabel: String = "codexport-client-host"
+        defaultDataChannelLabel: String = "codexport-client-host",
+        relayBaseURL: URL? = nil
     ) throws -> WebRTCRuntimeConfiguration {
         let label = nonEmpty(environment["CODEXPORT_WEBRTC_DATA_CHANNEL_LABEL"]) ?? defaultDataChannelLabel
         if let json = nonEmpty(environment["CODEXPORT_WEBRTC_ICE_SERVERS_JSON"]) {
@@ -20,24 +27,41 @@ public enum WebRTCRuntimeConfigurationEnvironment {
             servers.append(WebRTCICEServerConfiguration(urls: stunURLs))
         }
         let turnURLs = splitURLs(environment["CODEXPORT_WEBRTC_TURN_URLS"])
-        if !turnURLs.isEmpty {
+        if !turnURLs.isEmpty,
+           let turnUsername = nonEmpty(environment["CODEXPORT_WEBRTC_TURN_USERNAME"]),
+           let turnCredential = nonEmpty(environment["CODEXPORT_WEBRTC_TURN_CREDENTIAL"]) {
             servers.append(WebRTCICEServerConfiguration(
                 urls: turnURLs,
-                username: nonEmpty(environment["CODEXPORT_WEBRTC_TURN_USERNAME"]),
-                credential: nonEmpty(environment["CODEXPORT_WEBRTC_TURN_CREDENTIAL"])
+                username: turnUsername,
+                credential: turnCredential
             ))
+        }
+        if servers.isEmpty {
+            servers = defaultICEServers(for: resolvedRelayBaseURL(environment: environment, explicit: relayBaseURL))
         }
         return WebRTCRuntimeConfiguration(iceServers: servers, dataChannelLabel: label)
     }
 
     public static func makeOrDefault(
         environment: [String: String],
-        defaultDataChannelLabel: String = "codexport-client-host"
+        defaultDataChannelLabel: String = "codexport-client-host",
+        relayBaseURL: URL? = nil
     ) -> WebRTCRuntimeConfiguration {
         (try? make(
             environment: environment,
-            defaultDataChannelLabel: defaultDataChannelLabel
-        )) ?? WebRTCRuntimeConfiguration(iceServers: [], dataChannelLabel: defaultDataChannelLabel)
+            defaultDataChannelLabel: defaultDataChannelLabel,
+            relayBaseURL: relayBaseURL
+        )) ?? WebRTCRuntimeConfiguration(
+            iceServers: defaultICEServers(for: resolvedRelayBaseURL(environment: environment, explicit: relayBaseURL)),
+            dataChannelLabel: defaultDataChannelLabel
+        )
+    }
+
+    public static func defaultICEServers(for relayBaseURL: URL?) -> [WebRTCICEServerConfiguration] {
+        let host = relayBaseURL?.host ?? productionRelayBaseURL.host ?? "codexport.smarteffi.net"
+        return [
+            WebRTCICEServerConfiguration(urls: ["stun:\(host):3478"]),
+        ]
     }
 
     private static func parseICEServersJSON(_ rawValue: String) throws -> [WebRTCICEServerConfiguration] {
@@ -65,6 +89,18 @@ public enum WebRTCRuntimeConfigurationEnvironment {
     private static func nonEmpty(_ rawValue: String?) -> String? {
         let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private static func resolvedRelayBaseURL(environment: [String: String], explicit: URL?) -> URL? {
+        if let explicit {
+            return explicit
+        }
+        if let rawValue = nonEmpty(environment["CODEXPORT_RELAY_BASE_URL"]),
+           let url = URL(string: rawValue),
+           url.host != nil {
+            return url
+        }
+        return productionRelayBaseURL
     }
 }
 

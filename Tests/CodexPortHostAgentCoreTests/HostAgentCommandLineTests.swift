@@ -207,6 +207,40 @@ import Testing
     #expect(adapter.description == "Codex CLI live adapter")
 }
 
+@Test func hostAgentRuntimeAdapterFactoryDefersFreshCodexCLILiveResumeUntilFirstPrompt() {
+    let factory = HostAgentRuntimeAdapterFactory.make(configuration: HostAgentRuntimeAdapterFactoryConfiguration(
+        backend: .codexCLILive,
+        executablePath: "/usr/bin/codex",
+        processArguments: [],
+        codexExecBaseArguments: [],
+        codexExecResumeArguments: [],
+        codexExecTimeout: .seconds(120),
+        codexControlSocketPath: "/tmp/codex-control.sock"
+    ))
+
+    let adapter = factory(HostAgentLocalRelayAttachRequest(
+        sessionID: "fresh-thread",
+        threadID: "fresh-thread",
+        turnID: "fresh-thread-turn",
+        loadInitialHistory: false,
+        resumeLiveSession: false
+    ))
+
+    #expect(adapter.description == "Codex CLI live adapter")
+    #expect(adapter.metadata["resumeThreadOnStart"] == "false")
+}
+
+@Test func hostAgentRuntimeThreadProviderFactoryUsesControlSocketForCodexCLILiveThreadStarts() async throws {
+    let providers = HostAgentRuntimeThreadProviderFactory.make(
+        backend: .codexCLILive,
+        codexControlSocketPath: "/tmp/missing-codex-control.sock"
+    )
+
+    #expect(providers.threadListProvider is HostAgentCodexAppServerThreadListProvider)
+    #expect(providers.threadStarter is HostAgentCodexAppServerControlThreadProvider)
+    #expect(providers.threadHistoryProvider is HostAgentCodexAppServerThreadListProvider)
+}
+
 @Test func hostAgentCommandLineParsesProductionRelayConnectMode() throws {
     let configuration = try HostAgentCommandLineConfiguration(
         arguments: ["codexport-host-agent", "--relay-connect"],
@@ -223,6 +257,20 @@ import Testing
     #expect(configuration.relayConfiguration?.host.id.uuidString == "11111111-2222-3333-4444-555555555555")
     #expect(configuration.relayConfiguration?.host.displayName == "Mac Studio")
     #expect(configuration.relayConfiguration?.host.userName == "chenm")
+}
+
+@Test func hostAgentCommandLineRejectsLegacySyntheticHostDisplayName() throws {
+    #expect(throws: HostAgentCommandLineConfigurationError.missingRelaySeed("CODEXPORT_RELAY_HOST_NAME")) {
+        _ = try HostAgentCommandLineConfiguration(
+            arguments: ["codexport-host-agent", "--p2p-listen"],
+            environment: [
+                "CODEXPORT_RELAY_BASE_URL": "https://relay.example.test",
+                "CODEXPORT_RELAY_HOST_ID": "11111111-2222-3333-4444-555555555555",
+                "CODEXPORT_RELAY_HOST_NAME": "CodexPort Dev Mac",
+                "CODEXPORT_RELAY_HOST_USER": "chenm",
+            ]
+        )
+    }
 }
 
 @Test func hostAgentCommandLineStillAllowsRelayEndpointOverrideForLocalVerification() throws {

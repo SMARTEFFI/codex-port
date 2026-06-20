@@ -5,10 +5,16 @@ import CodexPortWebRTC
 public struct RelayP2PDataChannelOpenRequest: Equatable, Sendable {
     public var relayHost: RelayHost
     public var session: RelayP2POpenSessionResponse
+    public var iceConfiguration: WebRTCRuntimeConfiguration
 
-    public init(relayHost: RelayHost, session: RelayP2POpenSessionResponse) {
+    public init(
+        relayHost: RelayHost,
+        session: RelayP2POpenSessionResponse,
+        iceConfiguration: WebRTCRuntimeConfiguration = WebRTCRuntimeConfiguration(iceServers: [])
+    ) {
         self.relayHost = relayHost
         self.session = session
+        self.iceConfiguration = iceConfiguration
     }
 }
 
@@ -47,14 +53,28 @@ public struct RelayP2PSessionTransportFactory: Sendable {
             deviceID: deviceID,
             pairingRecordID: relayHost.pairingRecordID
         )
+        let iceConfiguration = try await signalingClient.iceConfiguration(
+            hostID: relayHost.hostAgentID,
+            deviceID: deviceID,
+            pairingRecordID: relayHost.pairingRecordID
+        ).configuration
         let dataChannel: any WebRTCDataChannelTransport
         do {
             dataChannel = try await dataChannelFactory.openDataChannel(RelayP2PDataChannelOpenRequest(
                 relayHost: relayHost,
-                session: session
+                session: session,
+                iceConfiguration: iceConfiguration
             ))
         } catch WebRTCPlatformRuntimeError.answerTimedOut {
             throw RelayP2PSessionTransportFactoryError.hostAgentDidNotAnswer
+        }
+        if let recoveryRuntime = dataChannelFactory as? P2PConnectionRecoveryRuntime {
+            return RelayP2PRecoveringDataChannelTransport(
+                relayHost: relayHost,
+                session: session,
+                dataChannel: dataChannel,
+                runtime: recoveryRuntime
+            )
         }
         return ClientHostSessionDataChannelTransport(dataChannel: dataChannel)
     }

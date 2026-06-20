@@ -154,6 +154,50 @@ import Testing
     #expect(attach["threadID"] as? String == "thread-1")
     #expect(attach["turnID"] as? String == "thread-1-turn")
     #expect(attach["cwd"] as? String == "/Users/chenm/Projects/codex-port")
+    #expect(attach["loadInitialHistory"] as? Bool == true)
+    #expect(attach["resumeLiveSession"] as? Bool == true)
+}
+
+@Test func relaySessionRouteBuilderPassesFreshSessionAttachOptionsIntoRelayClient() async throws {
+    let relayHost = RelayHost(
+        hostAgentID: UUID(uuidString: "00000000-0000-0000-0000-000000000041")!,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        pairingRecordID: "pairing-1",
+        deviceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+        relayEndpointURL: URL(string: "wss://relay.example.test/v0/streams")!,
+        presence: .online(activeConnectionCount: 1),
+        diagnosticsSummary: "Ready"
+    )
+    let transport = RecordingRelayJSONLTransportForBuilder()
+    let route = RelaySessionRouteBuilder.route(
+        profileDefaultDirectory: "/Users/chenm",
+        relayHost: relayHost,
+        threadSnapshots: [
+            RelayThreadSummarySnapshot(
+                id: "fresh-thread",
+                cwd: "/Users/chenm/Projects/codex-port",
+                updatedAtUnixTime: 1_780_991_312,
+                preview: "fresh-thread",
+                gitRepository: nil,
+                gitBranch: nil,
+                status: "running"
+            ),
+        ],
+        makeTransport: { _ in transport }
+    )
+    let context = try #require(route.relaySessionContext(
+        threadID: "fresh-thread",
+        options: .init(loadInitialHistory: false, resumeLiveSession: false)
+    ))
+
+    _ = try await context.clientManager.attach()
+
+    let attach = try #require(transport.firstSentJSONObject())
+    #expect(attach["type"] as? String == "attach")
+    #expect(attach["threadID"] as? String == "fresh-thread")
+    #expect(attach["loadInitialHistory"] as? Bool == false)
+    #expect(attach["resumeLiveSession"] as? Bool == false)
 }
 
 @Test func relaySessionRouteBuilderCanUseProductionWebSocketTransportFactory() throws {
@@ -253,6 +297,8 @@ import Testing
     #expect(sentObject["clientID"] as? String == relayHost.pairingRecordID)
     #expect(sentObject["sessionID"] as? String == "thread-1")
     #expect(sentObject["threadID"] as? String == "thread-1")
+    #expect(sentObject["loadInitialHistory"] as? Bool == true)
+    #expect(sentObject["resumeLiveSession"] as? Bool == true)
     #expect(sentObject["turnID"] as? String == "thread-1-turn")
     #expect(sentObject["cwd"] as? String == "/Users/chenm/Projects/codex-port")
 }
@@ -351,6 +397,16 @@ private final class RelayP2PSignalingRecordingHTTPClientForRoute: RelayP2PSignal
         at url: URL
     ) async throws -> RelayP2POpenSessionResponse {
         openResponse
+    }
+
+    func getICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest,
+        at url: URL
+    ) async throws -> RelayP2PICEConfigurationResponse {
+        RelayP2PICEConfigurationResponse(
+            configuration: WebRTCRuntimeConfiguration(iceServers: []),
+            expiresAtUnixTime: 0
+        )
     }
 
     func sendMessage(_ request: RelayP2PSendMessageRequest, at url: URL) async throws {}

@@ -3,6 +3,7 @@ import Foundation
 public struct WebRTCSidecarMessage: Codable, Equatable, Sendable {
     public enum MessageType: String, Codable, Sendable {
         case accept
+        case restartICE
         case accepted
         case localICE
         case remoteICE

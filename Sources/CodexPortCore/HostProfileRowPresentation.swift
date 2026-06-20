@@ -48,8 +48,13 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
             subtitle = "Mac: \(profile.name) · \(host.userName)"
             switch host.readiness {
             case .ready:
-                statusText = "在线"
-                statusKind = .online
+                if let connectionPathState = host.connectionPathState {
+                    statusText = connectionPathState.iosPathSummary
+                    statusKind = Self.statusKind(for: connectionPathState)
+                } else {
+                    statusText = "在线"
+                    statusKind = .online
+                }
                 canOpenWorkspaces = true
             case let .loading(stage):
                 statusText = Self.loadingStatusText(for: stage)
@@ -81,6 +86,19 @@ public struct HostProfileRowPresentation: Equatable, Sendable {
             return "等待 Host 协议..."
         case .threadList:
             return "读取会话中..."
+        }
+    }
+
+    private static func statusKind(for pathState: RemoteConnectionPathState) -> StatusKind {
+        switch pathState.transportState {
+        case .failed:
+            .failed
+        case .idle:
+            .offline
+        case .checking, .reconnecting:
+            .loading
+        case .connected:
+            .online
         }
     }
 

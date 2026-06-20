@@ -23,7 +23,16 @@ case let .listIdleThreadsJSON(limit):
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data("\n".utf8))
 case .localRelayJSONL:
-    let service = HostAgentLocalRelayService(adapterFactory: configuration.adapterFactory)
+    let providers = HostAgentRuntimeThreadProviderFactory.make(
+        backend: configuration.backend,
+        codexControlSocketPath: configuration.codexControlSocketPath
+    )
+    let service = HostAgentLocalRelayService(
+        adapterFactory: configuration.adapterFactory,
+        threadListProvider: providers.threadListProvider,
+        threadStarter: providers.threadStarter,
+        threadHistoryProvider: providers.threadHistoryProvider
+    )
     while let line = readLine() {
         do {
             try await service.handleLine(line) { outputLine in
@@ -46,7 +55,16 @@ case let .localRelayWebSocket(port):
         let pairing = try await gateway.authorize(device: device, forHostID: seed.host.id, pairedAt: Date())
         pairings.append(pairing)
     }
-    let service = HostAgentLocalRelayService(adapterFactory: configuration.adapterFactory)
+    let providers = HostAgentRuntimeThreadProviderFactory.make(
+        backend: configuration.backend,
+        codexControlSocketPath: configuration.codexControlSocketPath
+    )
+    let service = HostAgentLocalRelayService(
+        adapterFactory: configuration.adapterFactory,
+        threadListProvider: providers.threadListProvider,
+        threadStarter: providers.threadStarter,
+        threadHistoryProvider: providers.threadHistoryProvider
+    )
     let server = RelayWebSocketLineStreamServer(port: port, gateway: gateway) { _, line, writer in
         try await service.handleLine(line) { outputLine in
             try? await writer.sendLine(outputLine)
@@ -64,7 +82,16 @@ case .relayConnect:
     guard let relayConfiguration = configuration.relayConfiguration else {
         throw HostAgentCommandLineConfigurationError.missingRelayBaseURL
     }
-    let service = HostAgentLocalRelayService(adapterFactory: configuration.adapterFactory)
+    let providers = HostAgentRuntimeThreadProviderFactory.make(
+        backend: configuration.backend,
+        codexControlSocketPath: configuration.codexControlSocketPath
+    )
+    let service = HostAgentLocalRelayService(
+        adapterFactory: configuration.adapterFactory,
+        threadListProvider: providers.threadListProvider,
+        threadStarter: providers.threadStarter,
+        threadHistoryProvider: providers.threadHistoryProvider
+    )
     let connector = HostAgentRelayConnector(
         host: relayConfiguration.host,
         endpointURL: relayConfiguration.hostConnectURL,
@@ -81,21 +108,22 @@ case .p2pListen:
     }
     let diagnosticsRunID = ProcessInfo.processInfo.environment["CODEXPORT_ISSUE74_RUN_ID"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
-    let service = HostAgentLocalRelayService(adapterFactory: configuration.adapterFactory)
-    let webRTCConfiguration = WebRTCRuntimeConfigurationEnvironment.makeOrDefault(
-        environment: ProcessInfo.processInfo.environment
+    let providers = HostAgentRuntimeThreadProviderFactory.make(
+        backend: configuration.backend,
+        codexControlSocketPath: configuration.codexControlSocketPath
+    )
+    let service = HostAgentLocalRelayService(
+        adapterFactory: configuration.adapterFactory,
+        threadListProvider: providers.threadListProvider,
+        threadStarter: providers.threadStarter,
+        threadHistoryProvider: providers.threadHistoryProvider
     )
     let listener = HostAgentP2PSignalingListener(
         host: relayConfiguration.host,
         signalingClient: HostAgentP2PSignalingClient(relayBaseURL: relayConfiguration.relayBaseURL),
-        acceptor: configuration.webRTCSidecarCommand.map { command in
-            HostAgentWebRTCSidecarAcceptor(configuration: WebRTCSidecarConfiguration(
-                command: command,
-                iceConfiguration: webRTCConfiguration
-            ))
-        } ?? HostAgentWebRTCDataChannelAcceptor(
-            configuration: webRTCConfiguration
-        ),
+        acceptorFactory: configuration.webRTCSidecarCommand.map { command in
+            HostAgentWebRTCSidecarAcceptorFactory(command: command)
+        } ?? HostAgentWebRTCDataChannelAcceptorFactory(),
         service: service,
         onEvent: { event in
             writeP2PDiagnosticsLine("CodexPort Host Agent P2P listener: \(event.logDescription)", runID: diagnosticsRunID)

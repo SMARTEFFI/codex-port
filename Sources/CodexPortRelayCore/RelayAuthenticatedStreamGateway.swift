@@ -50,6 +50,8 @@ public actor RelayAuthenticatedStreamGateway {
 
     private let supportedVersions: [RelayProtocolVersion]
     private let now: @Sendable () -> Date
+    private let iceConfigurationProvider: any RelayP2PICEConfigurationProviding
+    private let stateStore: any RelayAuthenticatedStreamGatewayStateStoring
     private var hosts: [UUID: RelayHostIdentity] = [:]
     private var devices: [AuthorizationKey: DeviceIdentity] = [:]
     private var authorizations: [AuthorizationKey: PairingRecord] = [:]
@@ -61,15 +63,26 @@ public actor RelayAuthenticatedStreamGateway {
 
     public init(
         supportedVersions: [RelayProtocolVersion],
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        iceConfigurationProvider: any RelayP2PICEConfigurationProviding = RelayP2PICEConfigurationProvider.empty,
+        initialState: RelayAuthenticatedStreamGatewayState = RelayAuthenticatedStreamGatewayState(),
+        stateStore: any RelayAuthenticatedStreamGatewayStateStoring = NoopRelayAuthenticatedStreamGatewayStateStore()
     ) {
         self.supportedVersions = supportedVersions
         self.now = now
+        self.iceConfigurationProvider = iceConfigurationProvider
+        self.stateStore = stateStore
+        let restored = Self.restoredDictionaries(from: initialState)
+        self.hosts = restored.hosts
+        self.devices = restored.devices
+        self.authorizations = restored.authorizations
+        self.usedPairingTokenIDs = restored.usedPairingTokenIDs
     }
 
     @discardableResult
     public func registerHost(_ host: RelayHostIdentity) -> RelayHostPresence {
         hosts[host.id] = host
+        persistState()
         return .online(activeConnectionCount: activeConnectionCount(forHostID: host.id))
     }
 
@@ -142,6 +155,7 @@ public actor RelayAuthenticatedStreamGateway {
         )
         devices[key] = device
         authorizations[key] = record
+        persistState()
         return record
     }
 
@@ -152,6 +166,7 @@ public actor RelayAuthenticatedStreamGateway {
         }
         let revoked = record.revoked(at: date)
         authorizations[key] = revoked
+        persistState()
         return revoked
     }
 
@@ -236,6 +251,31 @@ public actor RelayAuthenticatedStreamGateway {
         )
         p2pSessions[response.sessionID] = response
         return response
+    }
+
+    public func issueP2PICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest
+    ) throws -> RelayP2PICEConfigurationResponse {
+        guard hosts[request.hostID] != nil else {
+            throw RelayProtocolError.hostNotRegistered(hostID: request.hostID)
+        }
+        let key = AuthorizationKey(hostID: request.hostID, deviceID: request.deviceID)
+        guard let record = authorizations[key],
+              record.isActive,
+              record.id == request.pairingRecordID,
+              devices[key] != nil
+        else {
+            throw RelayProtocolError.deviceNotAuthorized(hostID: request.hostID, deviceID: request.deviceID)
+        }
+        _ = try negotiateP2P(supportedVersions: request.supportedVersions)
+        return try iceConfigurationProvider.issueICEConfiguration(
+            for: RelayP2PICEConfigurationContext(
+                hostID: request.hostID,
+                deviceID: request.deviceID,
+                pairingRecordID: request.pairingRecordID,
+                issuedAt: now()
+            )
+        )
     }
 
     public func sendP2PMessage(sessionID: UUID, message: RelayP2PSignalingMessageDTO) throws {
@@ -364,6 +404,10 @@ public actor RelayAuthenticatedStreamGateway {
         streams
     }
 
+    public func persistedStateSnapshot() -> RelayAuthenticatedStreamGatewayState {
+        persistedState()
+    }
+
     private func negotiate(endpoint: DeviceIdentity, supportedVersions: [RelayProtocolVersion]) throws -> RelayProtocolVersion {
         let relaySupported = Set(self.supportedVersions)
         if let selected = supportedVersions.filter({ relaySupported.contains($0) }).max() {
@@ -456,5 +500,52 @@ public actor RelayAuthenticatedStreamGateway {
 
     private static func pairingRecordID(hostID: UUID, deviceID: UUID) -> String {
         "pairing-\(hostID.uuidString)-\(deviceID.uuidString)"
+    }
+
+    private static func restoredDictionaries(
+        from state: RelayAuthenticatedStreamGatewayState
+    ) -> (
+        hosts: [UUID: RelayHostIdentity],
+        devices: [AuthorizationKey: DeviceIdentity],
+        authorizations: [AuthorizationKey: PairingRecord],
+        usedPairingTokenIDs: Set<String>
+    ) {
+        let hosts: [UUID: RelayHostIdentity] = [:]
+        var devices: [AuthorizationKey: DeviceIdentity] = [:]
+        var authorizations: [AuthorizationKey: PairingRecord] = [:]
+        for storedDevice in state.devices {
+            guard let device = storedDevice.deviceIdentity else { continue }
+            devices[AuthorizationKey(hostID: storedDevice.hostID, deviceID: device.id)] = device
+        }
+        for storedPairing in state.pairings {
+            let record = storedPairing.pairingRecord
+            authorizations[AuthorizationKey(hostID: record.hostID, deviceID: record.deviceID)] = record
+        }
+        return (hosts, devices, authorizations, Set(state.usedPairingTokenIDs))
+    }
+
+    private func persistState() {
+        do {
+            try stateStore.save(persistedState())
+        } catch {
+        }
+    }
+
+    private func persistedState() -> RelayAuthenticatedStreamGatewayState {
+        RelayAuthenticatedStreamGatewayState(
+            hosts: hosts.values
+                .map(StoredRelayHostIdentity.init)
+                .sorted { $0.id.uuidString < $1.id.uuidString },
+            devices: devices.map { key, device in
+                StoredDeviceIdentity(hostID: key.hostID, device: device)
+            }
+                .sorted {
+                    ($0.hostID.uuidString, $0.id.uuidString) < ($1.hostID.uuidString, $1.id.uuidString)
+                },
+            pairings: authorizations.values
+                .map(StoredPairingRecord.init)
+                .sorted { $0.id < $1.id },
+            usedPairingTokenIDs: usedPairingTokenIDs.sorted()
+        )
     }
 }

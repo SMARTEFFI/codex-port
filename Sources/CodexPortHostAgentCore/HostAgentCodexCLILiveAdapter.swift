@@ -5,11 +5,18 @@ public struct CodexCLILiveSessionDescriptor: Equatable, Sendable {
     public var sessionID: String
     public var threadID: String
     public var turnID: String
+    public var resumeThreadOnStart: Bool
 
-    public init(sessionID: String, threadID: String, turnID: String) {
+    public init(
+        sessionID: String,
+        threadID: String,
+        turnID: String,
+        resumeThreadOnStart: Bool = true
+    ) {
         self.sessionID = sessionID
         self.threadID = threadID
         self.turnID = turnID
+        self.resumeThreadOnStart = resumeThreadOnStart
     }
 }
 
@@ -149,8 +156,9 @@ public final class HostAgentCodexCLILiveAdapter: HostAgentLiveSessionAdapter, @u
                 self.resolveStart(.ready)
             } catch {
                 logger.record("codex cli live producer start failed session=\(session.sessionID) reasonBytes=\(String(describing: error).utf8.count)")
-                self.resolveStart(.failed("Codex CLI live producer failed to start."))
-                self.emit(.turnFailed(turnID: session.turnID, reason: "Codex CLI live producer failed to start."))
+                let reason = Self.startFailureReason(from: error)
+                self.resolveStart(.failed(reason))
+                self.emit(.turnFailed(turnID: session.turnID, reason: reason))
             }
             await pumpTask.value
         }
@@ -283,6 +291,23 @@ public final class HostAgentCodexCLILiveAdapter: HostAgentLiveSessionAdapter, @u
         for continuation in continuations {
             continuation.yield(event)
         }
+    }
+
+    private static func startFailureReason(from error: Error) -> String {
+        let rawReason: String
+        switch error {
+        case let error as CodexAppServerControlProducerError:
+            rawReason = error.description
+        case let error as CodexAppServerControlWebSocketTransportError:
+            rawReason = String(describing: error)
+        default:
+            rawReason = String(describing: error)
+        }
+        let trimmed = rawReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return "Codex CLI live producer failed to start."
+        }
+        return "Codex CLI live producer failed to start: \(trimmed)"
     }
 
     private func finishEvents() {

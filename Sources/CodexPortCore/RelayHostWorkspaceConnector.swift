@@ -44,6 +44,20 @@ public struct RelayHostWorkspaceConnector: Sendable {
         limit: Int = 100,
         requestID: String = UUID().uuidString
     ) async throws -> RelayHostWorkspaceConnection {
+        do {
+            return try await connectOnce(limit: limit, requestID: requestID)
+        } catch {
+            guard RelayJSONLSessionClientManager.shouldRecreateClient(after: error) else {
+                throw error
+            }
+            return try await connectOnce(limit: limit, requestID: requestID)
+        }
+    }
+
+    private func connectOnce(
+        limit: Int,
+        requestID: String
+    ) async throws -> RelayHostWorkspaceConnection {
         guard let listTransport = makeTransport(relayHost) else {
             throw RelayJSONLThreadListClientError.transportUnavailable
         }

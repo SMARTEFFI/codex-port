@@ -167,9 +167,18 @@ struct RootView: View {
             isLoadingWorkspaces: connection.isReloadingWorkspaces,
             canStartProjectSessions: connection.connectedRoute?.canStartProjectSession == true,
             startingThreadCWDs: connection.startingThreadCWDs,
+            onRefresh: {
+                guard connection.connectedRoute?.isRelay == true else { return }
+                Task {
+                    await connection.reloadWorkspaces()
+                }
+            },
             onOpenSession: { thread in
                 connection.markThreadRead(thread.id)
                 path.append(AppRoute.session(thread.id, isNew: false))
+            },
+            onArchiveSession: { thread in
+                connection.archiveThread(thread.id)
             },
             onStartProjectSession: { project in
                 Task {
@@ -191,14 +200,6 @@ struct RootView: View {
             }
         }
         .refreshable {
-            await connection.reloadWorkspaces()
-        }
-        .onAppear {
-            Task {
-                await connection.reloadWorkspaces()
-            }
-        }
-        .task {
             await connection.reloadWorkspaces()
         }
     }
@@ -406,6 +407,9 @@ private enum RelayReadinessFailureClassifier {
         }
         if normalized.contains("pairing") || message.contains("配对") {
             return .pairingInvalid
+        }
+        if normalized.contains("webrtc") || normalized.contains("datachannel") || normalized.contains("ice") {
+            return .hostAgentUnavailable
         }
         if normalized.contains("didnotanswer") || message.contains("未响应 WebRTC") || message.contains("在线状态已过期") {
             return .hostAgentUnavailable

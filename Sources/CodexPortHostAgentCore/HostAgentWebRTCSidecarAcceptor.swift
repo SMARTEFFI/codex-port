@@ -172,7 +172,7 @@ public actor HostAgentWebRTCSidecarAcceptor: HostAgentP2PDataChannelAccepting {
                         hostID: request.session.hostID,
                         deviceID: request.session.deviceID,
                         offer: request.offer,
-                        iceConfiguration: configuration.iceConfiguration
+                        iceConfiguration: request.iceConfiguration ?? configuration.iceConfiguration
                     ))
                 } catch {
                     self.failAccept(sessionID: sessionID, error: error)
@@ -187,6 +187,49 @@ public actor HostAgentWebRTCSidecarAcceptor: HostAgentP2PDataChannelAccepting {
             iceCandidates: accepted.iceCandidates ?? [],
             localICECandidateUpdates: localICEUpdates,
             dataChannel: dataChannel
+        )
+    }
+
+    public func restartICE(
+        _ request: HostAgentP2PAcceptRequest,
+        dataChannel: WebRTCDataChannelTransport
+    ) async throws -> HostAgentP2PAcceptResponse {
+        try await startIfNeeded()
+        let sessionID = request.session.sessionID
+        guard var state = sessions[sessionID] else {
+            throw HostAgentWebRTCSidecarError.unknownSession(sessionID)
+        }
+        var localICEContinuation: AsyncStream<RelayP2PSignalingMessageDTO>.Continuation!
+        let localICEUpdates = AsyncStream<RelayP2PSignalingMessageDTO> { continuation in
+            localICEContinuation = continuation
+        }
+        let accepted = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WebRTCSidecarMessage, Error>) in
+            state.acceptedContinuation = continuation
+            state.localICEContinuation = localICEContinuation
+            sessions[sessionID] = state
+            Task {
+                do {
+                    try await process.send(WebRTCSidecarMessage(
+                        type: .restartICE,
+                        sessionID: sessionID,
+                        hostID: request.session.hostID,
+                        deviceID: request.session.deviceID,
+                        offer: request.offer,
+                        iceConfiguration: request.iceConfiguration ?? configuration.iceConfiguration
+                    ))
+                } catch {
+                    self.failAccept(sessionID: sessionID, error: error)
+                }
+            }
+        }
+        guard let answer = accepted.answer else {
+            throw HostAgentWebRTCSidecarError.missingField("answer")
+        }
+        return HostAgentP2PAcceptResponse(
+            answer: answer,
+            iceCandidates: accepted.iceCandidates ?? [],
+            localICECandidateUpdates: localICEUpdates,
+            dataChannel: state.dataChannel
         )
     }
 
@@ -243,7 +286,7 @@ public actor HostAgentWebRTCSidecarAcceptor: HostAgentP2PDataChannelAccepting {
             let error = HostAgentWebRTCSidecarError.sidecarFailed(message.reason ?? "Sidecar failed.")
             failAccept(sessionID: sessionID, error: error)
             sessions[sessionID]?.dataChannel.deliver(.directFailed(reason: message.reason ?? "Sidecar failed."))
-        case .accept, .remoteICE, .dataChannelSend:
+        case .accept, .restartICE, .remoteICE, .dataChannelSend:
             break
         }
     }
@@ -290,6 +333,29 @@ public actor HostAgentWebRTCSidecarAcceptor: HostAgentP2PDataChannelAccepting {
         var acceptedContinuation: CheckedContinuation<WebRTCSidecarMessage, Error>?
         var localICEContinuation: AsyncStream<RelayP2PSignalingMessageDTO>.Continuation
         var dataChannel: HostAgentWebRTCSidecarDataChannelTransport
+    }
+}
+
+public struct HostAgentWebRTCSidecarAcceptorFactory: HostAgentP2PDataChannelAcceptorFactory {
+    private let command: HostAgentProcessCommand
+    private let processFactory: @Sendable () -> HostAgentWebRTCSidecarProcess
+
+    public init(
+        command: HostAgentProcessCommand,
+        processFactory: @escaping @Sendable () -> HostAgentWebRTCSidecarProcess = { HostAgentWebRTCJSONLSidecarProcess() }
+    ) {
+        self.command = command
+        self.processFactory = processFactory
+    }
+
+    public func makeAcceptor(configuration: WebRTCRuntimeConfiguration) -> HostAgentP2PDataChannelAccepting {
+        HostAgentWebRTCSidecarAcceptor(
+            configuration: WebRTCSidecarConfiguration(
+                command: command,
+                iceConfiguration: configuration
+            ),
+            process: processFactory()
+        )
     }
 }
 

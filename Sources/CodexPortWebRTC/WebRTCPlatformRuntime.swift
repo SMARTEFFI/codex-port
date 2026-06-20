@@ -39,6 +39,25 @@ public struct WebRTCPlatformDataChannelAcceptResult: Sendable {
     }
 }
 
+public enum WebRTCCandidatePairPath: Equatable, Sendable {
+    case direct
+    case relay
+    case unknown
+}
+
+public struct WebRTCDataChannelHealthCheckResult: Equatable, Sendable {
+    public var selectedCandidatePairPath: WebRTCCandidatePairPath
+    public var pingPongSucceeded: Bool
+
+    public init(
+        selectedCandidatePairPath: WebRTCCandidatePairPath,
+        pingPongSucceeded: Bool
+    ) {
+        self.selectedCandidatePairPath = selectedCandidatePairPath
+        self.pingPongSucceeded = pingPongSucceeded
+    }
+}
+
 public protocol WebRTCPlatformDataChannelOpening: Sendable {
     func openDataChannel(
         session: RelayP2POpenSessionResponse,
@@ -54,6 +73,35 @@ public protocol WebRTCPlatformDataChannelOpening: Sendable {
         _ candidate: WebRTCICECandidatePayload,
         to dataChannel: WebRTCDataChannelTransport
     ) async throws
+
+    func restartICE(
+        on dataChannel: WebRTCDataChannelTransport,
+        configuration: WebRTCRuntimeConfiguration
+    ) async throws -> WebRTCPlatformDataChannelOpenResult
+
+    func checkDirectPath(
+        on dataChannel: WebRTCDataChannelTransport,
+        requiredPingPongCount: Int
+    ) async throws -> WebRTCDataChannelHealthCheckResult
+}
+
+public extension WebRTCPlatformDataChannelOpening {
+    func restartICE(
+        on dataChannel: WebRTCDataChannelTransport,
+        configuration: WebRTCRuntimeConfiguration
+    ) async throws -> WebRTCPlatformDataChannelOpenResult {
+        throw WebRTCPlatformRuntimeError.runtimeUnavailable("WebRTC runtime does not support ICE restart.")
+    }
+
+    func checkDirectPath(
+        on dataChannel: WebRTCDataChannelTransport,
+        requiredPingPongCount: Int
+    ) async throws -> WebRTCDataChannelHealthCheckResult {
+        WebRTCDataChannelHealthCheckResult(
+            selectedCandidatePairPath: .unknown,
+            pingPongSucceeded: false
+        )
+    }
 }
 
 public protocol WebRTCPlatformDataChannelAccepting: Sendable {
@@ -67,6 +115,24 @@ public protocol WebRTCPlatformDataChannelAccepting: Sendable {
         _ candidate: WebRTCICECandidatePayload,
         to dataChannel: WebRTCDataChannelTransport
     ) async throws
+
+    func restartICE(
+        offer: WebRTCSessionDescriptionPayload,
+        session: RelayP2POpenSessionResponse,
+        configuration: WebRTCRuntimeConfiguration,
+        dataChannel: WebRTCDataChannelTransport
+    ) async throws -> WebRTCPlatformDataChannelAcceptResult
+}
+
+public extension WebRTCPlatformDataChannelAccepting {
+    func restartICE(
+        offer: WebRTCSessionDescriptionPayload,
+        session: RelayP2POpenSessionResponse,
+        configuration: WebRTCRuntimeConfiguration,
+        dataChannel: WebRTCDataChannelTransport
+    ) async throws -> WebRTCPlatformDataChannelAcceptResult {
+        throw WebRTCPlatformRuntimeError.runtimeUnavailable("WebRTC runtime does not support ICE restart.")
+    }
 }
 
 public struct UnavailableWebRTCPlatformDataChannelRuntime:
@@ -96,10 +162,33 @@ public struct UnavailableWebRTCPlatformDataChannelRuntime:
         throw WebRTCPlatformRuntimeError.runtimeUnavailable(Self.unavailableMessage)
     }
 
+    public func restartICE(
+        on dataChannel: WebRTCDataChannelTransport,
+        configuration: WebRTCRuntimeConfiguration
+    ) async throws -> WebRTCPlatformDataChannelOpenResult {
+        throw WebRTCPlatformRuntimeError.runtimeUnavailable(Self.unavailableMessage)
+    }
+
+    public func checkDirectPath(
+        on dataChannel: WebRTCDataChannelTransport,
+        requiredPingPongCount: Int
+    ) async throws -> WebRTCDataChannelHealthCheckResult {
+        throw WebRTCPlatformRuntimeError.runtimeUnavailable(Self.unavailableMessage)
+    }
+
     public func acceptDataChannel(
         offer: WebRTCSessionDescriptionPayload,
         session: RelayP2POpenSessionResponse,
         configuration: WebRTCRuntimeConfiguration
+    ) async throws -> WebRTCPlatformDataChannelAcceptResult {
+        throw WebRTCPlatformRuntimeError.runtimeUnavailable(Self.unavailableMessage)
+    }
+
+    public func restartICE(
+        offer: WebRTCSessionDescriptionPayload,
+        session: RelayP2POpenSessionResponse,
+        configuration: WebRTCRuntimeConfiguration,
+        dataChannel: WebRTCDataChannelTransport
     ) async throws -> WebRTCPlatformDataChannelAcceptResult {
         throw WebRTCPlatformRuntimeError.runtimeUnavailable(Self.unavailableMessage)
     }

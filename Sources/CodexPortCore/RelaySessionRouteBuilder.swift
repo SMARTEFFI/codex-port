@@ -12,12 +12,31 @@ public enum RelaySessionRouteBuilder {
         makeTransport: @escaping TransportFactory
     ) -> ConnectedSessionRoute {
         let threadSummaries = threadSnapshots.map(ThreadSummary.init(relaySnapshot:))
-        let registry = existingRegistry ?? RelaySessionContextRegistry(
+        let registry = existingRegistry ?? sessionRegistry(
+            relayHost: relayHost,
             allowedThreads: threadSummaries,
+            makeTransport: makeTransport
+        )
+        registry.updateAllowedThreads(threadSummaries)
+        return .relay(
+            hostID: relayHost.hostAgentID.uuidString,
+            clientID: relayHost.pairingRecordID,
+            threads: threadSummaries,
+            sessionRegistry: registry
+        )
+    }
+
+    public static func sessionRegistry(
+        relayHost: RelayHost,
+        allowedThreads: [ThreadSummary] = [],
+        makeTransport: @escaping TransportFactory
+    ) -> RelaySessionContextRegistry {
+        RelaySessionContextRegistry(
+            allowedThreads: allowedThreads,
             storeFactory: { threadID in
                 SessionStore(protocolClient: RelaySessionPlaceholderProtocolClient(threadID: threadID))
             },
-            clientFactory: { requestedThread, sessionStore in
+            clientFactory: { requestedThread, sessionStore, options in
                 guard let transport = makeTransport(relayHost) else {
                     return nil
                 }
@@ -27,17 +46,12 @@ public enum RelaySessionRouteBuilder {
                     threadID: requestedThread.id,
                     turnID: "\(requestedThread.id)-turn",
                     cwd: requestedThread.cwd,
+                    loadInitialHistoryOnAttach: options.loadInitialHistory,
+                    resumeLiveSessionOnAttach: options.resumeLiveSession,
                     transport: transport,
                     sessionStore: sessionStore
                 )
             }
-        )
-        registry.updateAllowedThreads(threadSummaries)
-        return .relay(
-            hostID: relayHost.hostAgentID.uuidString,
-            clientID: relayHost.pairingRecordID,
-            threads: threadSummaries,
-            sessionRegistry: registry
         )
     }
 }

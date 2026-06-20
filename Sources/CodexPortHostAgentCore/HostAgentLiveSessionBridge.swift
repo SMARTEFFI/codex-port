@@ -53,6 +53,7 @@ public final class HostAgentLiveSessionBridge<Adapter: HostAgentRelayWriteHandli
     }
 
     public func start() throws where Adapter: HostAgentLiveSessionAdapter {
+        guard eventPumpTask == nil else { return }
         let adapterEvents = adapter.events()
         eventPumpTask = Task { [weak self] in
             for await event in adapterEvents {

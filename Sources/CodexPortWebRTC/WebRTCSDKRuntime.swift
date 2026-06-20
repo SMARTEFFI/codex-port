@@ -50,6 +50,41 @@ public final class WebRTCSDKRuntime: WebRTCPlatformDataChannelOpening, WebRTCPla
         try await transport.addRemoteICECandidate(candidate)
     }
 
+    public func restartICE(
+        on dataChannel: WebRTCDataChannelTransport,
+        configuration: WebRTCRuntimeConfiguration
+    ) async throws -> WebRTCPlatformDataChannelOpenResult {
+        guard let transport = dataChannel as? WebRTCSDKDataChannelTransport else {
+            throw WebRTCSDKRuntimeError.unsupportedTransport
+        }
+        try await transport.update(configuration: configuration)
+        let offer = try await transport.restartICEOffer()
+        let localCandidates = await transport.localICECandidatesSnapshot()
+        return WebRTCPlatformDataChannelOpenResult(
+            offer: offer,
+            localICECandidates: localCandidates,
+            localICECandidateUpdates: transport.localICECandidateUpdates,
+            dataChannel: transport
+        )
+    }
+
+    public func checkDirectPath(
+        on dataChannel: WebRTCDataChannelTransport,
+        requiredPingPongCount: Int
+    ) async throws -> WebRTCDataChannelHealthCheckResult {
+        guard let transport = dataChannel as? WebRTCSDKDataChannelTransport else {
+            throw WebRTCSDKRuntimeError.unsupportedTransport
+        }
+        let path = try await transport.selectedCandidatePairPath()
+        let pingPongSucceeded = path == .direct
+            ? await transport.pingPong(requiredCount: requiredPingPongCount)
+            : false
+        return WebRTCDataChannelHealthCheckResult(
+            selectedCandidatePairPath: path,
+            pingPongSucceeded: pingPongSucceeded
+        )
+    }
+
     public func acceptDataChannel(
         offer: WebRTCSessionDescriptionPayload,
         session: RelayP2POpenSessionResponse,
@@ -60,6 +95,27 @@ public final class WebRTCSDKRuntime: WebRTCPlatformDataChannelOpening, WebRTCPla
             role: .answerer,
             configuration: configuration
         )
+        try await transport.applyRemoteDescription(offer)
+        let answer = try await transport.createAnswer()
+        let localCandidates = await transport.localICECandidatesSnapshot()
+        return WebRTCPlatformDataChannelAcceptResult(
+            answer: answer,
+            localICECandidates: localCandidates,
+            localICECandidateUpdates: transport.localICECandidateUpdates,
+            dataChannel: transport
+        )
+    }
+
+    public func restartICE(
+        offer: WebRTCSessionDescriptionPayload,
+        session: RelayP2POpenSessionResponse,
+        configuration: WebRTCRuntimeConfiguration,
+        dataChannel: WebRTCDataChannelTransport
+    ) async throws -> WebRTCPlatformDataChannelAcceptResult {
+        guard let transport = dataChannel as? WebRTCSDKDataChannelTransport else {
+            throw WebRTCSDKRuntimeError.unsupportedTransport
+        }
+        try await transport.update(configuration: configuration)
         try await transport.applyRemoteDescription(offer)
         let answer = try await transport.createAnswer()
         let localCandidates = await transport.localICECandidatesSnapshot()
@@ -85,6 +141,7 @@ public final class WebRTCSDKRuntime: WebRTCPlatformDataChannelOpening, WebRTCPla
 public enum WebRTCSDKRuntimeError: Error, Equatable, Sendable {
     case unsupportedTransport
     case peerConnectionCreationFailed
+    case peerConnectionConfigurationFailed
     case dataChannelCreationFailed
     case invalidSDPType(String)
 }
@@ -113,6 +170,8 @@ public final class WebRTCSDKDataChannelTransport:
     private let localICEContinuation: AsyncStream<WebRTCICECandidatePayload>.Continuation
     private var dataChannel: RTCDataChannel?
     private var localICECandidates: [WebRTCICECandidatePayload] = []
+    private var pendingHealthPongs: [String: CheckedContinuation<Bool, Never>] = [:]
+    private var receivedHealthPongs: Set<String> = []
 
     fileprivate init(
         factory: RTCPeerConnectionFactory,
@@ -136,13 +195,7 @@ public final class WebRTCSDKDataChannelTransport:
         self.localICEContinuation = localICEContinuation!
 
         let rtcConfiguration = RTCConfiguration()
-        rtcConfiguration.iceServers = configuration.iceServers.map { server in
-            RTCIceServer(
-                urlStrings: server.urls,
-                username: server.username,
-                credential: server.credential
-            )
-        }
+        rtcConfiguration.iceServers = Self.rtcIceServers(from: configuration.iceServers)
         rtcConfiguration.sdpSemantics = .unifiedPlan
         let constraints = RTCMediaConstraints(
             mandatoryConstraints: nil,
@@ -201,6 +254,14 @@ public final class WebRTCSDKDataChannelTransport:
         return WebRTCSessionDescriptionPayload(type: .offer, sdp: description.sdp)
     }
 
+    fileprivate func restartICEOffer() async throws -> WebRTCSessionDescriptionPayload {
+        peerConnection.restartIce()
+        lock.withLock {
+            localICECandidates.removeAll()
+        }
+        return try await createOffer()
+    }
+
     fileprivate func createAnswer() async throws -> WebRTCSessionDescriptionPayload {
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         let description = try await peerConnection.answer(for: constraints)
@@ -245,6 +306,96 @@ public final class WebRTCSDKDataChannelTransport:
         lock.withLock { localICECandidates }
     }
 
+    fileprivate func update(configuration: WebRTCRuntimeConfiguration) async throws {
+        let rtcConfiguration = peerConnection.configuration
+        rtcConfiguration.iceServers = Self.rtcIceServers(from: configuration.iceServers)
+        guard peerConnection.setConfiguration(rtcConfiguration) else {
+            throw WebRTCSDKRuntimeError.peerConnectionConfigurationFailed
+        }
+    }
+
+    fileprivate func selectedCandidatePairPath() async throws -> WebRTCCandidatePairPath {
+        await withCheckedContinuation { (continuation: CheckedContinuation<WebRTCCandidatePairPath, Never>) in
+            peerConnection.statistics { report in
+                continuation.resume(returning: Self.selectedCandidatePairPath(from: report))
+            }
+        }
+    }
+
+    fileprivate func pingPong(requiredCount: Int) async -> Bool {
+        guard requiredCount > 0 else {
+            return true
+        }
+        for _ in 0..<requiredCount {
+            let nonce = UUID().uuidString
+            guard let line = try? WebRTCDataChannelHealthCheck.pingLine(nonce: nonce) else {
+                return false
+            }
+            let pongTask = waitForHealthPong(nonce: nonce)
+            do {
+                for frame in WebRTCDataChannelJSONLFraming.frames(forLine: line) {
+                    try await send(frame)
+                }
+            } catch {
+                removeHealthPongWaiter(nonce: nonce)
+                return false
+            }
+            guard await pongTask.value else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func waitForHealthPong(nonce: String) -> Task<Bool, Never> {
+        Task { [weak self] in
+            guard let self else { return false }
+            if self.consumeReceivedHealthPong(nonce: nonce) {
+                return true
+            }
+            return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                self.registerHealthPongWaiter(nonce: nonce, continuation: continuation)
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    let timedOut = self?.lock.withLock {
+                        self?.pendingHealthPongs.removeValue(forKey: nonce)
+                    }
+                    timedOut?.resume(returning: false)
+                }
+            }
+        }
+    }
+
+    private func registerHealthPongWaiter(
+        nonce: String,
+        continuation: CheckedContinuation<Bool, Never>
+    ) {
+        let alreadyReceived = lock.withLock {
+            if receivedHealthPongs.remove(nonce) != nil {
+                return true
+            }
+            pendingHealthPongs[nonce] = continuation
+            return false
+        }
+        if alreadyReceived {
+            continuation.resume(returning: true)
+        }
+    }
+
+    private func removeHealthPongWaiter(nonce: String) {
+        let continuation = lock.withLock {
+            receivedHealthPongs.remove(nonce)
+            return pendingHealthPongs.removeValue(forKey: nonce)
+        }
+        continuation?.resume(returning: false)
+    }
+
+    private func consumeReceivedHealthPong(nonce: String) -> Bool {
+        lock.withLock {
+            receivedHealthPongs.remove(nonce) != nil
+        }
+    }
+
     private func setLocalDescription(_ description: RTCSessionDescription) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             peerConnection.setLocalDescription(description) { error in
@@ -264,6 +415,68 @@ public final class WebRTCSDKDataChannelTransport:
         case .answer:
             return .answer
         }
+    }
+
+    private static func selectedCandidatePairPath(from report: RTCStatisticsReport) -> WebRTCCandidatePairPath {
+        let statistics = report.statistics
+        guard let selectedPair = statistics.values.first(where: { statistic in
+            guard statistic.type == "candidate-pair" else { return false }
+            if let selected = statistic.values["selected"] as? NSNumber, selected.boolValue {
+                return true
+            }
+            if let nominated = statistic.values["nominated"] as? NSNumber,
+               nominated.boolValue,
+               (statistic.values["state"] as? String) == "succeeded" {
+                return true
+            }
+            return false
+        }) else {
+            return .unknown
+        }
+        let localCandidateID = selectedPair.values["localCandidateId"] as? String
+            ?? selectedPair.values["localCandidateID"] as? String
+        let remoteCandidateID = selectedPair.values["remoteCandidateId"] as? String
+            ?? selectedPair.values["remoteCandidateID"] as? String
+        let candidateIDs = [localCandidateID, remoteCandidateID].compactMap { $0 }
+        let candidateTypes = candidateIDs.compactMap { statistics[$0]?.values["candidateType"] as? String }
+        guard !candidateTypes.isEmpty else {
+            return .unknown
+        }
+        if candidateTypes.contains("relay") {
+            return .relay
+        }
+        let directTypes: Set<String> = ["host", "srflx", "prflx"]
+        return candidateTypes.allSatisfy { directTypes.contains($0) } ? .direct : .unknown
+    }
+
+    private static func rtcIceServers(
+        from servers: [WebRTCICEServerConfiguration]
+    ) -> [RTCIceServer] {
+        servers.compactMap { server in
+            let urls = server.urls.filter { url in
+                !Self.isTURNURL(url) || Self.hasTURNCredentials(server)
+            }
+            guard !urls.isEmpty else {
+                return nil
+            }
+            guard Self.hasTURNCredentials(server) else {
+                return RTCIceServer(urlStrings: urls)
+            }
+            return RTCIceServer(
+                urlStrings: urls,
+                username: server.username,
+                credential: server.credential
+            )
+        }
+    }
+
+    private static func isTURNURL(_ url: String) -> Bool {
+        let lowercased = url.lowercased()
+        return lowercased.hasPrefix("turn:") || lowercased.hasPrefix("turns:")
+    }
+
+    private static func hasTURNCredentials(_ server: WebRTCICEServerConfiguration) -> Bool {
+        server.username?.isEmpty == false && server.credential?.isEmpty == false
     }
 
     public func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
@@ -332,6 +545,17 @@ public final class WebRTCSDKDataChannelTransport:
     }
 
     public func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
+        if case let .pong(nonce) = WebRTCDataChannelHealthCheck.decodeFrame(buffer.data) {
+            let continuation = lock.withLock {
+                let continuation = pendingHealthPongs.removeValue(forKey: nonce)
+                if continuation == nil {
+                    receivedHealthPongs.insert(nonce)
+                }
+                return continuation
+            }
+            continuation?.resume(returning: true)
+            return
+        }
         incomingContinuation.yield(buffer.data)
     }
 }

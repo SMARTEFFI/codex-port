@@ -156,13 +156,13 @@ public struct HostProfileFormModel: Equatable, Sendable {
         if material.contains("://") {
             guard material.hasPrefix("codexport://pair?") else { return false }
         }
-        guard (try? RelayHostProductionPairingInput(
-            pairingMaterial: material,
-            deviceDisplayName: "Scanner validation"
-        )) != nil else {
+        guard let scannedMaterial = try? RelayPairingScannedMaterial.parse(material) else {
             return false
         }
-        pairingMaterial = material
+        pairingMaterial = scannedMaterial.pairingCode
+        if trimmed(name).isEmpty, let hostDisplayName = scannedMaterial.hostDisplayName {
+            name = hostDisplayName
+        }
         return true
     }
 

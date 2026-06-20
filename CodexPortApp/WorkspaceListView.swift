@@ -11,7 +11,9 @@ struct WorkspaceListView: View {
     let isLoadingWorkspaces: Bool
     let canStartProjectSessions: Bool
     let startingThreadCWDs: Set<String>
+    let onRefresh: () -> Void
     let onOpenSession: (ThreadSummary) -> Void
+    let onArchiveSession: (ThreadSummary) -> Void
     let onStartProjectSession: (WorkspaceProject) -> Void
     let onBrowseWorkspace: () -> Void
     @State private var expandedProjectIDs: Set<String> = []
@@ -23,6 +25,7 @@ struct WorkspaceListView: View {
 
     private static let initialVisibleGroupLimit = 5
     private static let groupPageSize = 5
+    private static let listRowInsets = EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 16)
 
     init(
         grouping: Binding<WorkspaceGrouping>,
@@ -34,7 +37,9 @@ struct WorkspaceListView: View {
         isLoadingWorkspaces: Bool = false,
         canStartProjectSessions: Bool = true,
         startingThreadCWDs: Set<String> = [],
+        onRefresh: @escaping () -> Void = {},
         onOpenSession: @escaping (ThreadSummary) -> Void,
+        onArchiveSession: @escaping (ThreadSummary) -> Void = { _ in },
         onStartProjectSession: @escaping (WorkspaceProject) -> Void,
         onBrowseWorkspace: @escaping () -> Void
     ) {
@@ -47,7 +52,9 @@ struct WorkspaceListView: View {
         self.isLoadingWorkspaces = isLoadingWorkspaces
         self.canStartProjectSessions = canStartProjectSessions
         self.startingThreadCWDs = startingThreadCWDs
+        self.onRefresh = onRefresh
         self.onOpenSession = onOpenSession
+        self.onArchiveSession = onArchiveSession
         self.onStartProjectSession = onStartProjectSession
         self.onBrowseWorkspace = onBrowseWorkspace
     }
@@ -62,12 +69,7 @@ struct WorkspaceListView: View {
                         Section {
                             if !isCollapsed(group) {
                                 ForEach(threads(for: group)) { thread in
-                                    Button {
-                                        onOpenSession(thread)
-                                    } label: {
-                                        RecentThreadRow(thread: thread, showsProjectPath: false)
-                                    }
-                                    .buttonStyle(.plain)
+                                    threadRow(thread, showsProjectPath: false)
                                 }
                                 if hiddenCount(for: group) > 0 {
                                     Button {
@@ -98,7 +100,8 @@ struct WorkspaceListView: View {
                                 } : nil
                             )
                         }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
+                        .listRowInsets(Self.listRowInsets)
+                        .listRowSeparator(.hidden)
                     }
                     if hasMoreProjectGroups {
                         WorkspaceGroupPaginationRow(
@@ -106,7 +109,8 @@ struct WorkspaceListView: View {
                             remainingCount: remainingProjectGroupCount,
                             onLoadMore: loadMoreProjectGroups
                         )
-                        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
+                        .listRowInsets(Self.listRowInsets)
+                        .listRowSeparator(.hidden)
                     }
                 }
             } else {
@@ -117,12 +121,7 @@ struct WorkspaceListView: View {
                         Section {
                             if !isCollapsed(group) {
                                 ForEach(threads(for: group)) { thread in
-                                    Button {
-                                        onOpenSession(thread)
-                                    } label: {
-                                        RecentThreadRow(thread: thread, showsProjectPath: true)
-                                    }
-                                    .buttonStyle(.plain)
+                                    threadRow(thread, showsProjectPath: true)
                                 }
                                 if hiddenCount(for: group) > 0 {
                                     Button {
@@ -153,7 +152,8 @@ struct WorkspaceListView: View {
                                 }
                             )
                         }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
+                        .listRowInsets(Self.listRowInsets)
+                        .listRowSeparator(.hidden)
                     }
                     if hasMoreDayGroups {
                         WorkspaceGroupPaginationRow(
@@ -161,15 +161,21 @@ struct WorkspaceListView: View {
                             remainingCount: remainingDayGroupCount,
                             onLoadMore: loadMoreDayGroups
                         )
-                        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
+                        .listRowInsets(Self.listRowInsets)
+                        .listRowSeparator(.hidden)
                     }
                 }
             }
         }
         .listStyle(.plain)
+        .listSectionSpacing(4)
+        .contentMargins(.top, 2, for: .scrollContent)
+        .environment(\.defaultMinListRowHeight, 0)
         .scrollContentBackground(.hidden)
-        .background(Color(.systemGroupedBackground))
+        .background(Color(.systemBackground))
         .navigationTitle("工作区")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: onRefresh)
         .onChange(of: displayedProjectGroups.map(\.id)) {
             visibleProjectGroupLimit = Self.initialVisibleGroupLimit
         }
@@ -196,6 +202,25 @@ struct WorkspaceListView: View {
                 .accessibilityLabel("排序方式")
             }
         }
+    }
+
+    private func threadRow(_ thread: ThreadSummary, showsProjectPath: Bool) -> some View {
+        Button {
+            onOpenSession(thread)
+        } label: {
+            RecentThreadRow(thread: thread, showsProjectPath: showsProjectPath)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                onArchiveSession(thread)
+            } label: {
+                Label("归档", systemImage: "archivebox")
+            }
+            .tint(.red)
+        }
+        .accessibilityHint("打开会话")
     }
 
     private var displayedProjectGroups: [WorkspaceProjectThreadGroup] {
@@ -528,18 +553,18 @@ private struct WorkspaceGroupHeader: View {
                 .accessibilityValue(isTrailingActionInProgress ? "正在创建" : "")
             }
         }
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
                 Image(systemName: iconName)
-                    .font(.headline)
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
                 Text(title)
-                    .font(.title3.weight(.semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
@@ -581,19 +606,18 @@ private struct RecentThreadRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 if showsProjectPath, let cwd = thread.cwd {
-                    Text(cwd)
+                    Text(URL(fileURLWithPath: cwd).lastPathComponent)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Text(thread.updatedAt, style: .relative)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
             WorkspaceActivityIndicatorView(indicator: thread.activityIndicator)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 10)
+        .contentShape(Rectangle())
     }
 }
 

@@ -7,7 +7,12 @@ import SwiftUI
 
 struct CodexPortHostAgentMenuApplication: App {
     @NSApplicationDelegateAdaptor(HostAgentMenuAppDelegate.self) private var appDelegate
-    @StateObject private var model = HostAgentMenuModel()
+    @StateObject private var model: HostAgentMenuModel
+
+    init() {
+        let model = HostAgentMenuModel()
+        _model = StateObject(wrappedValue: model)
+    }
 
     var body: some Scene {
         MenuBarExtra("CodexPort Host Agent", systemImage: "terminal") {
@@ -43,26 +48,33 @@ private final class HostAgentMenuModel: ObservableObject {
         let relayConfiguration = Self.makeRelayConfiguration(environment: environment)
         backend = Self.makeBackend(environment: environment)
         pairingCoordinator = HostAgentMenuPairingCoordinator(
-            hostID: relayConfiguration?.host.id ?? Self.defaultHostID
+            hostID: relayConfiguration?.host.id ?? Self.defaultHostID,
+            hostDisplayName: relayConfiguration?.host.displayName
         )
         pairingPublisher = relayConfiguration.map { HostAgentRelayPairingPublisher(configuration: $0) }
         pairingRecordsClient = relayConfiguration.map { HostAgentRelayPairingRecordsClient(configuration: $0) }
         if let relayConfiguration {
-            let service = HostAgentLocalRelayService(adapterFactory: Self.makeAdapterFactory(environment: environment))
+            let threadProviders = HostAgentRuntimeThreadProviderFactory.make(
+                backend: backend,
+                codexControlSocketPath: Self.codexControlSocketPath(environment["CODEXPORT_CODEX_CONTROL_SOCKET_PATH"])
+            )
+            let service = HostAgentLocalRelayService(
+                adapterFactory: Self.makeAdapterFactory(environment: environment),
+                threadListProvider: threadProviders.threadListProvider,
+                threadStarter: threadProviders.threadStarter,
+                threadHistoryProvider: threadProviders.threadHistoryProvider
+            )
             localRelayService = service
             if Self.isP2PListenerEnabled(environment: environment) {
                 relayConnector = nil
-                let webRTCConfiguration = WebRTCRuntimeConfigurationEnvironment.makeOrDefault(environment: environment)
+                Self.writeLogLine("CodexPort Host Agent P2P listener starting")
                 p2pListener = HostAgentP2PSignalingListener(
                     host: relayConfiguration.host,
                     signalingClient: HostAgentP2PSignalingClient(relayBaseURL: relayConfiguration.relayBaseURL),
-                    acceptor: Self.makeP2PAcceptor(
-                        environment: environment,
-                        webRTCConfiguration: webRTCConfiguration
-                    ),
+                    acceptorFactory: Self.makeP2PAcceptorFactory(environment: environment),
                     service: service,
                     onEvent: { event in
-                        print("CodexPort Host Agent P2P listener: \(event)")
+                        Self.writeLogLine("CodexPort Host Agent P2P listener: \(event)")
                     }
                 )
                 p2pListener?.start()
@@ -173,7 +185,10 @@ private final class HostAgentMenuModel: ObservableObject {
             relayBaseURL = HostAgentRelayConfiguration.productionRelayBaseURL
         }
         let hostID = (environment["CODEXPORT_RELAY_HOST_ID"].flatMap(UUID.init(uuidString:))) ?? defaultHostID
-        let hostName = environment["CODEXPORT_RELAY_HOST_NAME"].flatMap(nonEmpty) ?? defaultHostName
+        let hostName = HostAgentHostDisplayName.resolved(
+            environmentValue: environment["CODEXPORT_RELAY_HOST_NAME"],
+            defaultName: defaultHostName
+        )
         let hostUser = environment["CODEXPORT_RELAY_HOST_USER"].flatMap(nonEmpty) ?? defaultHostUser
         let host = RelayHostIdentity(
             id: hostID,
@@ -236,19 +251,15 @@ private final class HostAgentMenuModel: ObservableObject {
         }
     }
 
-    private static func makeP2PAcceptor(
-        environment: [String: String],
-        webRTCConfiguration: WebRTCRuntimeConfiguration
-    ) -> any HostAgentP2PDataChannelAccepting {
+    private static func makeP2PAcceptorFactory(
+        environment: [String: String]
+    ) -> any HostAgentP2PDataChannelAcceptorFactory {
         guard let executablePath = environment["CODEXPORT_WEBRTC_SIDECAR_PATH"], !executablePath.isEmpty else {
-            return HostAgentWebRTCDataChannelAcceptor(configuration: webRTCConfiguration)
+            return HostAgentWebRTCDataChannelAcceptorFactory()
         }
-        return HostAgentWebRTCSidecarAcceptor(configuration: WebRTCSidecarConfiguration(
-            command: HostAgentProcessCommand(
-                executablePath: executablePath,
-                arguments: parsedArgumentsJSON(environment["CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON"])
-            ),
-            iceConfiguration: webRTCConfiguration
+        return HostAgentWebRTCSidecarAcceptorFactory(command: HostAgentProcessCommand(
+            executablePath: executablePath,
+            arguments: parsedArgumentsJSON(environment["CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON"])
         ))
     }
 
@@ -297,6 +308,10 @@ private final class HostAgentMenuModel: ObservableObject {
             return .seconds(120)
         }
         return .milliseconds(Int64(seconds * 1_000))
+    }
+
+    nonisolated private static func writeLogLine(_ line: String) {
+        FileHandle.standardOutput.write(Data((line + "\n").utf8))
     }
 }
 

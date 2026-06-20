@@ -84,6 +84,24 @@ public struct WebRTCSessionDescriptionPayload: Codable, Equatable, Sendable {
     }
 }
 
+public enum WebRTCSessionDescriptionOfferIntent: String, Codable, Equatable, Sendable {
+    case openDataChannel
+    case iceRestart
+}
+
+public struct WebRTCSessionDescriptionOfferPayload: Codable, Equatable, Sendable {
+    public var description: WebRTCSessionDescriptionPayload
+    public var intent: WebRTCSessionDescriptionOfferIntent
+
+    public init(
+        description: WebRTCSessionDescriptionPayload,
+        intent: WebRTCSessionDescriptionOfferIntent
+    ) {
+        self.description = description
+        self.intent = intent
+    }
+}
+
 public struct WebRTCICECandidatePayload: Codable, Equatable, Sendable {
     public var sdp: String
     public var sdpMid: String?
@@ -101,15 +119,35 @@ public enum RelayP2PWebRTCSignalingPayloadCodec {
         String(data: try JSONEncoder().encode(payload), encoding: .utf8)!
     }
 
+    public static func encodeOffer(
+        _ payload: WebRTCSessionDescriptionPayload,
+        intent: WebRTCSessionDescriptionOfferIntent
+    ) throws -> String {
+        String(data: try JSONEncoder().encode(WebRTCSessionDescriptionOfferPayload(
+            description: payload,
+            intent: intent
+        )), encoding: .utf8)!
+    }
+
     public static func encode(_ payload: WebRTCICECandidatePayload) throws -> String {
         String(data: try JSONEncoder().encode(payload), encoding: .utf8)!
     }
 
     public static func decodeSessionDescription(_ payload: String) throws -> WebRTCSessionDescriptionPayload {
+        try decodeOffer(payload).description
+    }
+
+    public static func decodeOffer(_ payload: String) throws -> WebRTCSessionDescriptionOfferPayload {
         guard let data = payload.data(using: .utf8) else {
             throw RelayP2PWebRTCSignalingPayloadCodecError.invalidUTF8Payload
         }
-        return try JSONDecoder().decode(WebRTCSessionDescriptionPayload.self, from: data)
+        if let wrapped = try? JSONDecoder().decode(WebRTCSessionDescriptionOfferPayload.self, from: data) {
+            return wrapped
+        }
+        return WebRTCSessionDescriptionOfferPayload(
+            description: try JSONDecoder().decode(WebRTCSessionDescriptionPayload.self, from: data),
+            intent: .openDataChannel
+        )
     }
 
     public static func decodeICECandidate(_ payload: String) throws -> WebRTCICECandidatePayload {

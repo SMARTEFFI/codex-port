@@ -73,6 +73,8 @@ public final class WebRTCSidecarRunner: @unchecked Sendable {
         switch message.type {
         case .accept:
             await handleAccept(message)
+        case .restartICE:
+            await handleRestartICE(message)
         case .remoteICE:
             await handleRemoteICE(message)
         case .dataChannelSend:
@@ -151,6 +153,91 @@ public final class WebRTCSidecarRunner: @unchecked Sendable {
         } catch {
             await sendError(sessionID: sessionID, reason: String(describing: error))
         }
+    }
+
+    private func handleRestartICE(_ message: WebRTCSidecarMessage) async {
+        guard let sessionID = message.sessionID,
+              let hostID = message.hostID,
+              let deviceID = message.deviceID,
+              let offerMessage = message.offer,
+              let configuration = message.iceConfiguration,
+              let dataChannel = lock.withLock({ dataChannels[sessionID] }) else {
+            await sendError(sessionID: message.sessionID, reason: "Missing restartICE fields.")
+            return
+        }
+        let offer: WebRTCSessionDescriptionPayload
+        do {
+            offer = try RelayP2PWebRTCSignalingPayloadCodec.decodeSessionDescription(offerMessage.payload)
+        } catch {
+            await sendError(sessionID: sessionID, reason: "Invalid offer payload.")
+            return
+        }
+        let session = RelayP2POpenSessionResponse(
+            sessionID: sessionID,
+            hostID: hostID,
+            deviceID: deviceID,
+            pairingRecordID: "sidecar-\(hostID.uuidString)-\(deviceID.uuidString)",
+            selectedVersion: .v0_2_0,
+            openedAtUnixTime: Date().timeIntervalSince1970
+        )
+        do {
+            let accepted = try await runtime.restartICE(
+                offer: offer,
+                session: session,
+                configuration: configuration,
+                dataChannel: dataChannel
+            )
+            try await send(WebRTCSidecarMessage(
+                type: .accepted,
+                sessionID: sessionID,
+                answer: RelayP2PSignalingMessageDTO(
+                    from: .host,
+                    to: .device,
+                    kind: .answer,
+                    payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(accepted.answer)
+                ),
+                iceCandidates: try accepted.localICECandidates.map { candidate in
+                    RelayP2PSignalingMessageDTO(
+                        from: .host,
+                        to: .device,
+                        kind: .iceCandidate,
+                        payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(candidate)
+                    )
+                }
+            ))
+            restartLocalICEForwarding(sessionID: sessionID, updates: accepted.localICECandidateUpdates)
+        } catch {
+            await sendError(sessionID: sessionID, reason: String(describing: error))
+        }
+    }
+
+    private func restartLocalICEForwarding(
+        sessionID: UUID,
+        updates: AsyncStream<WebRTCICECandidatePayload>
+    ) {
+        let task = Task { [weak self] in
+            for await candidate in updates {
+                guard !Task.isCancelled else { return }
+                do {
+                    try await self?.send(WebRTCSidecarMessage(
+                        type: .localICE,
+                        sessionID: sessionID,
+                        candidate: RelayP2PSignalingMessageDTO(
+                            from: .host,
+                            to: .device,
+                            kind: .iceCandidate,
+                            payload: try RelayP2PWebRTCSignalingPayloadCodec.encode(candidate)
+                        )
+                    ))
+                } catch {
+                    return
+                }
+            }
+        }
+        let previous = lock.withLock {
+            localICEForwardTasks.updateValue(task, forKey: sessionID)
+        }
+        previous?.cancel()
     }
 
     private func handleDataChannelSend(_ message: WebRTCSidecarMessage) async {

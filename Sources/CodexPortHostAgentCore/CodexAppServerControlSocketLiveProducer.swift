@@ -39,6 +39,7 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
     private var notificationTask: Task<Void, Never>?
     private var pendingPrompts: [CodexCLILivePrompt] = []
     private var emittedUserMessageKeys = Set<String>()
+    private var hasResumedThread = false
 
     public init(
         transport: CodexAppServerControlTransporting = CodexAppServerControlWebSocketTransport(),
@@ -78,10 +79,15 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
             method: "initialize",
             params: Self.initializeParams(clientName: clientName)
         )
-        _ = try await transport.request(
-            method: "thread/resume",
-            params: .object(["threadId": .string(session.threadID)])
-        )
+        if session.resumeThreadOnStart {
+            _ = try await transport.request(
+                method: "thread/resume",
+                params: .object(["threadId": .string(session.threadID)])
+            )
+            lock.withLock {
+                hasResumedThread = true
+            }
+        }
         emit(.sessionOpened(session))
     }
 
@@ -98,6 +104,7 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
                     attachments: prompt.attachments
                 )
             )
+            try await resumeThreadAfterFreshTurnStartIfNeeded(threadID: prompt.threadID)
             return .accepted
         } catch let error as CodexAppServerControlProducerError {
             removePendingPrompt(writeID: prompt.writeID)
@@ -105,6 +112,34 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
         } catch {
             removePendingPrompt(writeID: prompt.writeID)
             return .rejected(reason: "Codex app-server control request failed.")
+        }
+    }
+
+    private func resumeThreadAfterFreshTurnStartIfNeeded(threadID: String) async throws {
+        let shouldResume = lock.withLock {
+            guard !hasResumedThread else { return false }
+            hasResumedThread = true
+            return true
+        }
+        guard shouldResume else { return }
+        do {
+            _ = try await transport.request(
+                method: "thread/resume",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "excludeTurns": .bool(true),
+                    "initialTurnsPage": .object([
+                        "limit": .number(1),
+                        "sortDirection": .string("desc"),
+                        "itemsView": .string("full"),
+                    ]),
+                ])
+            )
+        } catch {
+            lock.withLock {
+                hasResumedThread = false
+            }
+            throw error
         }
     }
 
@@ -149,7 +184,7 @@ public final class CodexAppServerControlSocketLiveProducer: CodexCLILiveProducin
         }
     }
 
-    private static func initializeParams(clientName: String) -> ControlJSONValue {
+    static func initializeParams(clientName: String) -> ControlJSONValue {
         .object([
             "clientInfo": .object([
                 "name": .string(clientName),

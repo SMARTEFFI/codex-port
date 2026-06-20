@@ -129,6 +129,34 @@ import Testing
     #expect(decoded.contains { $0 == .event(clientID: "iphone-a", .assistantTextDelta(turnID: "thread-1-turn", itemID: "process-assistant", text: "live ready")) })
 }
 
+@Test func hostAgentLocalRelayServiceSkipsInitialHistoryWhenAttachDisablesIt() async throws {
+    let historyProvider = RecordingHostAgentThreadHistoryProvider(pages: [])
+    let service = HostAgentLocalRelayService(
+        commandFactory: { _ in
+            HostAgentProcessCommand(
+                executablePath: "/bin/sh",
+                arguments: ["-c", "printf 'codex:assistant:live ready\\n'; sleep 0.05"]
+            )
+        },
+        threadListProvider: StubHostAgentThreadListProvider(threads: []),
+        threadHistoryProvider: historyProvider
+    )
+
+    let output = try await service.runScriptedSession(inputLines: [
+        #"{"type":"attach","clientID":"iphone-a","sessionID":"thread-new","threadID":"thread-new","turnID":"thread-new-turn","loadInitialHistory":false}"#,
+    ], settleDelay: .milliseconds(80))
+    let decoded = try output.map(RelayEndpointJSONLCodec.decodeLine)
+
+    #expect(decoded.allSatisfy {
+        if case .threadHistoryPage = $0 {
+            return false
+        }
+        return true
+    })
+    #expect(historyProvider.requests.isEmpty)
+    #expect(decoded.contains { $0 == .event(clientID: "iphone-a", .assistantTextDelta(turnID: "thread-new-turn", itemID: "process-assistant", text: "live ready")) })
+}
+
 @Test func hostAgentLocalRelayServiceRespondsWithCursorThreadHistoryPages() async throws {
     let provider = RecordingHostAgentThreadHistoryProvider(pages: [
         RelayThreadHistoryPage(
@@ -233,7 +261,8 @@ import Testing
             )
         },
         threadListProvider: StubHostAgentThreadListProvider(threads: []),
-        threadHistoryProvider: HangingHostAgentThreadHistoryProvider()
+        threadHistoryProvider: HangingHostAgentThreadHistoryProvider(),
+        threadHistoryTimeout: .milliseconds(50)
     )
     let output = HostAgentLocalRelayOutputBuffer()
 
@@ -251,6 +280,12 @@ import Testing
 
     #expect(decoded.contains { $0 == .event(clientID: "iphone-a", .sessionStarted(sessionID: "thread-1", threadID: "thread-1", turnID: "thread-1-turn")) })
     #expect(decoded.contains { $0 == .event(clientID: "iphone-a", .assistantTextDelta(turnID: "thread-1-turn", itemID: "process-assistant", text: "live ready")) })
+    #expect(decoded.contains {
+        if case let .error(clientID, reason) = $0 {
+            return clientID == "iphone-a" && reason.contains("thread/resume")
+        }
+        return false
+    })
 }
 
 @Test func hostAgentCodexAppServerThreadHistoryProviderRequestsExperimentalResumeHistory() throws {
@@ -291,6 +326,46 @@ import Testing
     #expect(snapshot.cwd == "/Users/chenm/Projects/codex-port")
     #expect(snapshot.preview == "新会话")
     #expect(snapshot.updatedAtUnixTime > 0)
+}
+
+@Test func hostAgentCodexAppServerThreadStarterNormalizesIdentifierPreview() async throws {
+    let transport = CapturingHostAgentJSONRPCTransport()
+    transport.responseByMethod["thread/start"] = [
+        "result": [
+            "thread": [
+                "id": "019ed477-9ea6-7992-8f87-1446afee0a27",
+                "cwd": "/Users/chenm/Projects/codex-port",
+                "preview": "019ed477-9ea6-7992-8f87-1446afee0a27",
+            ],
+        ],
+    ]
+
+    let snapshot = try await HostAgentCodexAppServerThreadListProvider.startThreadSnapshot(
+        cwd: "/Users/chenm/Projects/codex-port",
+        transport: transport,
+        timeout: .seconds(1)
+    )
+
+    #expect(snapshot.id == "019ed477-9ea6-7992-8f87-1446afee0a27")
+    #expect(snapshot.preview == "新会话")
+}
+
+@Test func hostAgentControlThreadProviderStartsThreadThroughControlSocket() async throws {
+    let transport = RecordingHostAgentControlTransport()
+    await transport.setResponse(method: "thread/start", result: .object([
+        "thread": .object([
+            "id": .string("control-thread-started"),
+            "cwd": .string("/Users/chenm/Projects/codex-port"),
+            "preview": .string("新会话"),
+        ]),
+    ]))
+    let provider = HostAgentCodexAppServerControlThreadProvider(transport: transport)
+
+    let snapshot = try await provider.startThread(cwd: "/Users/chenm/Projects/codex-port")
+
+    #expect(await transport.requests.map(\.method) == ["initialize", "thread/start"])
+    #expect(snapshot.id == "control-thread-started")
+    #expect(snapshot.cwd == "/Users/chenm/Projects/codex-port")
 }
 
 @Test func hostAgentCodexAppServerThreadHistoryProviderMapsOfficialHistoryItems() throws {
@@ -502,7 +577,8 @@ import Testing
                     session: CodexCLILiveSessionDescriptor(
                         sessionID: request.sessionID,
                         threadID: request.threadID,
-                        turnID: request.turnID
+                        turnID: request.turnID,
+                        resumeThreadOnStart: request.resumeLiveSession
                     ),
                     producer: CodexAppServerControlSocketLiveProducer(transport: transport)
                 ),
@@ -582,6 +658,105 @@ import Testing
     #expect(lines.contains { $0.contains(#""event":"turnCompleted""#) && $0.contains(#""turnID":"turn-remote""#) })
 }
 
+@Test func hostAgentLocalRelayServiceFreshAttachDoesNotStartLiveSessionBeforeFirstPrompt() async throws {
+    let transport = RecordingHostAgentControlTransport()
+    let service = HostAgentLocalRelayService(
+        adapterFactory: { request in
+            AnyHostAgentLiveSessionAdapter(
+                HostAgentCodexCLILiveAdapter(
+                    session: CodexCLILiveSessionDescriptor(
+                        sessionID: request.sessionID,
+                        threadID: request.threadID,
+                        turnID: request.turnID,
+                        resumeThreadOnStart: request.resumeLiveSession
+                    ),
+                    producer: CodexAppServerControlSocketLiveProducer(transport: transport)
+                ),
+                description: "Codex CLI live adapter"
+            )
+        },
+        threadHistoryProvider: StubHostAgentThreadHistoryProvider(history: RelayThreadHistorySnapshot(
+            threadID: "fresh-thread",
+            items: [],
+            status: .completed
+        ))
+    )
+    let output = HostAgentLocalRelayOutputBuffer()
+
+    try await service.handleLine(
+        #"{"type":"attach","clientID":"iphone-a","sessionID":"fresh-thread","threadID":"fresh-thread","turnID":"fresh-thread-turn","loadInitialHistory":false,"resumeLiveSession":false}"#
+    ) { line in
+        await output.append(line)
+    }
+    try await Task.sleep(for: .milliseconds(25))
+    await service.stopAll()
+
+    #expect(await transport.requests.isEmpty)
+    let lines = await output.snapshot()
+    #expect(!lines.contains { $0.contains(#""event":"sessionStarted""#) })
+    #expect(!lines.contains { $0.contains(#""event":"turnFailed""#) })
+}
+
+@Test func hostAgentLocalRelayServiceFreshSessionStartsLiveSessionOnFirstPrompt() async throws {
+    let transport = RecordingHostAgentControlTransport()
+    let service = HostAgentLocalRelayService(
+        adapterFactory: { request in
+            AnyHostAgentLiveSessionAdapter(
+                HostAgentCodexCLILiveAdapter(
+                    session: CodexCLILiveSessionDescriptor(
+                        sessionID: request.sessionID,
+                        threadID: request.threadID,
+                        turnID: request.turnID,
+                        resumeThreadOnStart: request.resumeLiveSession
+                    ),
+                    producer: CodexAppServerControlSocketLiveProducer(transport: transport)
+                ),
+                description: "Codex CLI live adapter"
+            )
+        },
+        threadHistoryProvider: StubHostAgentThreadHistoryProvider(history: RelayThreadHistorySnapshot(
+            threadID: "fresh-thread",
+            items: [],
+            status: .completed
+        ))
+    )
+    let output = HostAgentLocalRelayOutputBuffer()
+
+    try await service.handleLine(
+        #"{"type":"attach","clientID":"iphone-a","sessionID":"fresh-thread","threadID":"fresh-thread","turnID":"fresh-thread-turn","loadInitialHistory":false,"resumeLiveSession":false}"#
+    ) { line in
+        await output.append(line)
+    }
+    let promptTask = Task {
+        try await service.handleLine(
+            #"{"type":"prompt","clientID":"iphone-a","sessionID":"fresh-thread","threadID":"fresh-thread","writeID":"write-1","text":"fresh prompt"}"#
+        ) { line in
+            await output.append(line)
+        }
+    }
+    await transport.waitForRequest(method: "turn/start")
+    await transport.deliver(ControlJSONRPCNotification(
+        method: "turn/started",
+        params: .object(["turnId": .string("turn-fresh")])
+    ))
+    await transport.deliver(ControlJSONRPCNotification(
+        method: "turn/completed",
+        params: .object(["turnId": .string("turn-fresh")])
+    ))
+    try await promptTask.value
+    try await Task.sleep(for: .milliseconds(25))
+    await service.stopAll()
+
+    let requests = await transport.requests
+    #expect(requests.map(\.method) == ["initialize", "turn/start", "thread/resume"])
+    #expect(requests[1].params.object?["threadId"]?.string == "fresh-thread")
+    #expect(requests[2].params.object?["threadId"]?.string == "fresh-thread")
+    let lines = await output.snapshot()
+    #expect(lines.contains { $0.contains(#""event":"sessionStarted""#) })
+    #expect(lines.contains { $0.contains(#""type":"writeStatus""#) && $0.contains(#""status":"handled""#) })
+    #expect(lines.contains { $0.contains(#""event":"turnCompleted""#) && $0.contains(#""turnID":"turn-fresh""#) })
+}
+
 private struct StubHostAgentThreadListProvider: HostAgentThreadListProviding {
     var threads: [RelayThreadSummarySnapshot]
 
@@ -605,7 +780,13 @@ private final class RecordingHostAgentThreadStarter: HostAgentThreadStarting, @u
 }
 
 private actor RecordingHostAgentControlTransport: CodexAppServerControlTransporting {
+    enum Response: Sendable {
+        case success(ControlJSONValue)
+        case failure(String)
+    }
+
     private(set) var requests: [CodexAppServerControlRequest] = []
+    private var responseByMethod: [String: Response] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var continuation: AsyncStream<ControlJSONRPCNotification>.Continuation?
 
@@ -623,7 +804,12 @@ private actor RecordingHostAgentControlTransport: CodexAppServerControlTransport
         for waiter in waiters {
             waiter.resume()
         }
-        return .object([:])
+        switch responseByMethod[method] ?? .success(.object([:])) {
+        case let .success(result):
+            return result
+        case let .failure(reason):
+            throw CodexAppServerControlProducerError.requestFailed(reason)
+        }
     }
 
     func close() async {
@@ -641,6 +827,10 @@ private actor RecordingHostAgentControlTransport: CodexAppServerControlTransport
         await withCheckedContinuation { continuation in
             requestWaiters[method, default: []].append(continuation)
         }
+    }
+
+    func setResponse(method: String, result: ControlJSONValue) {
+        responseByMethod[method] = .success(result)
     }
 }
 
@@ -693,11 +883,15 @@ private final class CapturingHostAgentJSONRPCTransport: HostAgentAppServerJSONRP
     }
 
     private(set) var requests: [Request] = []
+    var responseByMethod: [String: [String: Any]] = [:]
 
     func sendNotification(method: String, params: [String: Any]) throws {}
 
     func request(id: Int, method: String, params: [String: Any], timeout: Duration) async throws -> [String: Any] {
         requests.append(Request(id: id, method: method, params: params))
+        if let response = responseByMethod[method] {
+            return response
+        }
         switch method {
         case "thread/start":
             return [

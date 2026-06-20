@@ -12,6 +12,7 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
     private let makeClient: ClientFactory
     private let lock = NSLock()
     private var currentClient: RelayJSONLSessionClient?
+    private var closeMonitorTask: Task<Void, Never>?
 
     public init(
         sessionStore: SessionStore,
@@ -28,11 +29,17 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
     }
 
     @discardableResult
-    public func attach() async throws -> RelayJSONLSessionClient {
+    public func attach(
+        waitForInitialHistory: Bool = false,
+        timeout: Duration = .seconds(20)
+    ) async throws -> RelayJSONLSessionClient {
         if let client {
             return client
         }
-        return try await makeAttachedClient()
+        return try await makeAttachedClient(
+            waitForInitialHistory: waitForInitialHistory,
+            timeout: timeout
+        )
     }
 
     public func sendPrompt(_ text: String, writeID: String = UUID().uuidString) async throws {
@@ -65,6 +72,17 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
             let replacement = try await makeAttachedClient()
             return try await replacement.startThread(cwd: cwd, requestID: requestID, timeout: timeout)
         }
+    }
+
+    public func startThreadDetached(
+        cwd: String,
+        requestID: String = UUID().uuidString,
+        timeout: Duration = .seconds(10)
+    ) async throws -> RelayThreadSummarySnapshot {
+        guard let client = makeClient(sessionStore) else {
+            throw RelayJSONLSessionClientManagerError.clientUnavailable
+        }
+        return try await client.startThread(cwd: cwd, requestID: requestID, timeout: timeout)
     }
 
     @discardableResult
@@ -133,6 +151,23 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
         }
     }
 
+    public func recoverAfterForeground() async throws {
+        let client = try await attach()
+        try await client.recoverAfterForeground()
+    }
+
+    public func recoverAfterNetworkChange() async throws {
+        let client = try await attach()
+        try await client.recoverAfterNetworkChange()
+    }
+
+    public func retryDirectProbeNow() async {
+        guard let client = self.client else {
+            return
+        }
+        await client.retryDirectProbeNow()
+    }
+
     public func loadEarlierHistory(
         cursor: String?,
         limit: Int = SessionStore.defaultHistoryTurnPageSize,
@@ -180,18 +215,28 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
         lock.withLock {
             let client = currentClient
             currentClient = nil
+            closeMonitorTask?.cancel()
+            closeMonitorTask = nil
             return client
         }?.stop()
     }
 
-    private func makeAttachedClient() async throws -> RelayJSONLSessionClient {
+    private func makeAttachedClient(
+        waitForInitialHistory: Bool = false,
+        timeout: Duration = .seconds(20)
+    ) async throws -> RelayJSONLSessionClient {
         guard let client = makeClient(sessionStore) else {
             throw RelayJSONLSessionClientManagerError.clientUnavailable
         }
-        try await client.attach()
+        try await client.attach(
+            waitForInitialHistory: waitForInitialHistory,
+            timeout: timeout
+        )
         let previous = lock.withLock {
             let previous = currentClient
+            closeMonitorTask?.cancel()
             currentClient = client
+            closeMonitorTask = makeCloseMonitorTask(for: client)
             return previous
         }
         previous?.stop()
@@ -202,12 +247,46 @@ public final class RelayJSONLSessionClientManager: @unchecked Sendable {
         let discarded = lock.withLock {
             guard currentClient === client else { return nil as RelayJSONLSessionClient? }
             currentClient = nil
+            closeMonitorTask?.cancel()
+            closeMonitorTask = nil
             return client
         }
         discarded?.stop()
     }
 
+    private func makeCloseMonitorTask(for client: RelayJSONLSessionClient) -> Task<Void, Never> {
+        Task { [weak self, client] in
+            for await _ in client.closed {
+                guard let self else { return }
+                discardClosedClient(client)
+                guard !Task.isCancelled else { return }
+                _ = try? await makeAttachedClient()
+                return
+            }
+        }
+    }
+
+    private func discardClosedClient(_ client: RelayJSONLSessionClient) {
+        lock.withLock {
+            guard currentClient === client else { return }
+            currentClient = nil
+            closeMonitorTask = nil
+        }
+    }
+
     public static func shouldRecreateClient(after error: Error) -> Bool {
+        if let webRTC = error as? WebRTCDataChannelTransportError {
+            switch webRTC {
+            case .dataChannelNotOpen, .dataChannelClosed, .iceFailed:
+                return true
+            case .signalingFailed:
+                return false
+            }
+        }
+        if let jsonl = error as? RelayJSONLSessionClientError,
+           jsonl == .transportClosed {
+            return true
+        }
         if let posix = error as? POSIXError {
             return retryablePOSIXCodes.contains(posix.code)
         }

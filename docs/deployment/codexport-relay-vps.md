@@ -44,6 +44,19 @@ CODEXPORT_RELAY_PUBLIC_BASE_URL=https://codexport.smarteffi.net
 CODEXPORT_RELAY_TLS_MODE=reverse-proxy
 ```
 
+For P2P `TURN relay fallback`, the Relay service must also be able to issue
+short-lived TURN credentials. Set `CODEXPORT_RELAY_TURN_SHARED_SECRET` in the
+Relay `.env` to the same value as coturn `static-auth-secret`. Do not commit or
+print the production value.
+
+```env
+CODEXPORT_RELAY_TURN_SHARED_SECRET=<same value as coturn static-auth-secret>
+```
+
+When this value is missing, `/v0/p2p/ice-config` intentionally returns an empty
+ICE server list; iOS/HostAgent then only have their local STUN fallback and TURN
+cannot work.
+
 ## systemd Template
 
 Install `deploy/codexport-relay/codexport-relay.service` at:

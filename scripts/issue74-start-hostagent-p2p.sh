@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+source "$ROOT_DIR/scripts/lib/host-name.sh"
+
 if [[ $# -gt 1 ]]; then
   cat >&2 <<'USAGE'
 Usage:
@@ -20,7 +22,7 @@ USAGE
 fi
 
 HOST_ID="${CODEXPORT_RELAY_HOST_ID:-11111111-2222-3333-4444-555555555555}"
-HOST_NAME="${CODEXPORT_RELAY_HOST_NAME:-CodexPort Dev Mac}"
+HOST_NAME="${CODEXPORT_RELAY_HOST_NAME:-$(codexport_default_host_name)}"
 HOST_USER="${CODEXPORT_RELAY_HOST_USER:-${USER}}"
 RELAY_BASE_URL="${CODEXPORT_RELAY_BASE_URL:-https://codexport.smarteffi.net}"
 HOSTAGENT_LABEL="${CODEXPORT_HOSTAGENT_LAUNCHD_LABEL:-com.smarteffi.codexport.hostagent.p2p}"

@@ -238,6 +238,54 @@ import Testing
     #expect(store.recentThreads.first?.preview == "Remote caught up")
 }
 
+@Test func workspaceListStoreArchivesThreadLocallyAcrossReloads() async throws {
+    let transport = RecordingCodexTransport()
+    transport.stubbedResponses["thread/list"] = .object([
+        "threads": .array([
+            .object([
+                "id": .string("thread-archived"),
+                "cwd": .string("/repo/app"),
+                "updatedAt": .number(1_800_000_100),
+                "preview": .string("Archive me")
+            ]),
+            .object([
+                "id": .string("thread-kept"),
+                "cwd": .string("/repo/app"),
+                "updatedAt": .number(1_800_000_000),
+                "preview": .string("Keep me")
+            ])
+        ])
+    ])
+    let archiveState = InMemoryWorkspaceArchiveStateStore()
+    let store = WorkspaceListStore(
+        protocolClient: CodexProtocolFacade(transport: transport),
+        archiveStateStore: archiveState
+    )
+    try await store.reload(limit: 50)
+
+    store.archiveThread(id: "thread-archived")
+
+    #expect(store.recentThreads.map(\.id) == ["thread-kept"])
+    #expect(store.projects.first?.sessionCount == 1)
+    #expect(store.projectThreadGroups.first?.threads.map(\.id) == ["thread-kept"])
+    #expect(store.dayThreadGroups.first?.threads.map(\.id) == ["thread-kept"])
+
+    try await store.reload(limit: 50)
+
+    #expect(store.recentThreads.map(\.id) == ["thread-kept"])
+    #expect(store.projects.first?.sessionCount == 1)
+
+    let reloadedStore = WorkspaceListStore(
+        protocolClient: CodexProtocolFacade(transport: transport),
+        archiveStateStore: InMemoryWorkspaceArchiveStateStore(ids: archiveState.ids)
+    )
+
+    try await reloadedStore.reload(limit: 50)
+
+    #expect(reloadedStore.recentThreads.map(\.id) == ["thread-kept"])
+    #expect(reloadedStore.projects.first?.sessionCount == 1)
+}
+
 @Test func workspaceListStoreTreatsFirstRemoteLoadAsReadBaselineThenMarksLaterUpdatesUnread() async throws {
     let transport = RecordingCodexTransport()
     transport.stubbedResponses["thread/list"] = .object([
@@ -464,5 +512,21 @@ private final class InMemoryWorkspaceReadStateStore: WorkspaceReadStateStore, @u
 
     func saveReadAt(_ readAt: [String: Date]) throws {
         self.readAt = readAt
+    }
+}
+
+private final class InMemoryWorkspaceArchiveStateStore: WorkspaceArchiveStateStore, @unchecked Sendable {
+    var ids: Set<String>
+
+    init(ids: Set<String> = []) {
+        self.ids = ids
+    }
+
+    func loadArchivedThreadIDs() throws -> Set<String> {
+        ids
+    }
+
+    func saveArchivedThreadIDs(_ ids: Set<String>) throws {
+        self.ids = ids
     }
 }

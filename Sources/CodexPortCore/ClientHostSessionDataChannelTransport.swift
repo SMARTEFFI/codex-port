@@ -8,6 +8,7 @@ public final class ClientHostSessionDataChannelTransport: RelayJSONLTransport, @
     private let lineContinuation: AsyncStream<String>.Continuation
     private let lock = NSLock()
     private var receiveTask: Task<Void, Never>?
+    private var stateTask: Task<Void, Never>?
     private var pendingBuffer = Data()
 
     public init(dataChannel: WebRTCDataChannelTransport) {
@@ -21,11 +22,25 @@ public final class ClientHostSessionDataChannelTransport: RelayJSONLTransport, @
             for await message in dataChannel.incomingMessages {
                 self?.receive(message)
             }
+            self?.lineContinuation.finish()
+        }
+        self.stateTask = Task { [weak self] in
+            for await state in dataChannel.stateUpdates {
+                switch state {
+                case .dataChannelClosed, .turnFailed:
+                    self?.lineContinuation.finish()
+                    return
+                case .iceGathering, .directConnected, .directFailed, .turnRelayedConnected, .dataChannelOpen:
+                    continue
+                }
+            }
+            self?.lineContinuation.finish()
         }
     }
 
     deinit {
         receiveTask?.cancel()
+        stateTask?.cancel()
         lineContinuation.finish()
     }
 

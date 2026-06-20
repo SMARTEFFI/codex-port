@@ -94,6 +94,7 @@ public actor P2PSignalingService {
 
     private let supportedVersions: [RelayProtocolVersion]
     private let now: @Sendable () -> Date
+    private let iceConfigurationProvider: any RelayP2PICEConfigurationProviding
     private var hosts: [UUID: RelayHostIdentity] = [:]
     private var devices: [AuthorizationKey: DeviceIdentity] = [:]
     private var authorizations: [AuthorizationKey: PairingRecord] = [:]
@@ -102,10 +103,12 @@ public actor P2PSignalingService {
 
     public init(
         supportedVersions: [RelayProtocolVersion],
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        iceConfigurationProvider: any RelayP2PICEConfigurationProviding = RelayP2PICEConfigurationProvider.empty
     ) {
         self.supportedVersions = supportedVersions
         self.now = now
+        self.iceConfigurationProvider = iceConfigurationProvider
     }
 
     @discardableResult
@@ -197,6 +200,33 @@ public actor P2PSignalingService {
         )
         sessions[session.id] = session
         return session
+    }
+
+    public func issueICEConfiguration(
+        _ request: RelayP2PICEConfigurationRequest
+    ) throws -> RelayP2PICEConfigurationResponse {
+        guard hosts[request.hostID] != nil else {
+            throw P2PSignalingError.hostNotRegistered(hostID: request.hostID)
+        }
+
+        let key = AuthorizationKey(hostID: request.hostID, deviceID: request.deviceID)
+        guard let record = authorizations[key],
+              record.isActive,
+              record.id == request.pairingRecordID,
+              devices[key] != nil
+        else {
+            throw P2PSignalingError.deviceNotAuthorized(hostID: request.hostID, deviceID: request.deviceID)
+        }
+
+        _ = try negotiate(supportedVersions: request.supportedVersions)
+        return try iceConfigurationProvider.issueICEConfiguration(
+            for: RelayP2PICEConfigurationContext(
+                hostID: request.hostID,
+                deviceID: request.deviceID,
+                pairingRecordID: request.pairingRecordID,
+                issuedAt: now()
+            )
+        )
     }
 
     public func send(_ message: P2PSignalingMessage) throws {

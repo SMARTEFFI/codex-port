@@ -39,6 +39,98 @@ public enum HostAgentThreadListProviderError: Error, Equatable, Sendable {
     case timedOut(method: String)
 }
 
+public actor HostAgentCodexAppServerControlThreadProvider:
+    HostAgentThreadListProviding,
+    HostAgentThreadStarting,
+    HostAgentThreadHistoryProviding
+{
+    private let transport: CodexAppServerControlTransporting
+    private var initialized = false
+
+    public init(transport: CodexAppServerControlTransporting = CodexAppServerControlWebSocketTransport()) {
+        self.transport = transport
+    }
+
+    public func listThreads(limit: Int, cursor: String?) async throws -> RelayThreadListResponse {
+        try await initializeIfNeeded()
+        var params: [String: ControlJSONValue] = ["limit": .number(Double(max(1, limit)))]
+        if let cursor, !cursor.isEmpty {
+            params["cursor"] = .string(cursor)
+        }
+        let response = try await transport.request(
+            method: "thread/list",
+            params: .object(params)
+        )
+        return try HostAgentCodexAppServerThreadListProvider.threadListResponse(from: response.foundationValueDictionary)
+    }
+
+    public func history(threadID: String) async throws -> RelayThreadHistorySnapshot {
+        let page = try await historyPage(threadID: threadID, limit: 10, cursor: nil)
+        return RelayThreadHistorySnapshot(
+            threadID: page.threadID,
+            items: page.items,
+            status: page.status,
+            nextCursor: page.nextCursor
+        )
+    }
+
+    public func historyPage(threadID: String, limit: Int, cursor: String?) async throws -> RelayThreadHistoryPage {
+        try await initializeIfNeeded()
+        var turnsPage: [String: ControlJSONValue] = [
+            "limit": .number(Double(max(1, limit))),
+            "sortDirection": .string("desc"),
+            "itemsView": .string("full"),
+        ]
+        if let cursor, !cursor.isEmpty {
+            turnsPage["cursor"] = .string(cursor)
+        }
+        let response = try await transport.request(
+            method: "thread/resume",
+            params: .object([
+                "threadId": .string(threadID),
+                "excludeTurns": .bool(true),
+                "initialTurnsPage": .object(turnsPage),
+            ])
+        )
+        let snapshot = HostAgentCodexAppServerThreadListProvider.historySnapshot(
+            from: response.foundationValueDictionary,
+            fallbackThreadID: threadID
+        )
+        return RelayThreadHistoryPage(
+            requestID: "",
+            threadID: snapshot.threadID,
+            items: snapshot.items,
+            status: snapshot.status,
+            nextCursor: snapshot.nextCursor
+        )
+    }
+
+    public func startThread(cwd: String) async throws -> RelayThreadSummarySnapshot {
+        try await initializeIfNeeded()
+        let response = try await transport.request(
+            method: "thread/start",
+            params: .object([
+                "cwd": .string(cwd),
+                "model": .string("gpt-5.5"),
+            ])
+        )
+        return try HostAgentCodexAppServerThreadListProvider.startedThreadSnapshot(
+            from: response.foundationValueDictionary,
+            fallbackCWD: cwd
+        )
+    }
+
+    private func initializeIfNeeded() async throws {
+        guard !initialized else { return }
+        try await transport.connect()
+        _ = try await transport.request(
+            method: "initialize",
+            params: CodexAppServerControlSocketLiveProducer.initializeParams(clientName: "CodexPort Host Agent")
+        )
+        initialized = true
+    }
+}
+
 protocol HostAgentAppServerJSONRPCTransporting: Sendable {
     func sendNotification(method: String, params: [String: Any]) throws
     func request(id: Int, method: String, params: [String: Any], timeout: Duration) async throws -> [String: Any]
@@ -226,7 +318,7 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         ]
     }
 
-    private static func threadListResponse(from response: [String: Any]) throws -> RelayThreadListResponse {
+    static func threadListResponse(from response: [String: Any]) throws -> RelayThreadListResponse {
         let result = response["result"] as? [String: Any]
         let containers: [[String: Any]?] = [
             result,
@@ -244,7 +336,7 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         )
     }
 
-    private static func startedThreadSnapshot(from response: [String: Any], fallbackCWD: String) throws -> RelayThreadSummarySnapshot {
+    static func startedThreadSnapshot(from response: [String: Any], fallbackCWD: String) throws -> RelayThreadSummarySnapshot {
         let result = response["result"] as? [String: Any] ?? response
         let thread = result["thread"] as? [String: Any] ?? result
         let threadID = string("id", in: thread)
@@ -256,14 +348,12 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         }
         let git = thread["gitInfo"] as? [String: Any] ?? thread["git"] as? [String: Any]
         let updatedAt = unixTime(from: thread["updatedAt"] ?? thread["updated_at"])
+        let preview = startedThreadPreview(in: thread, threadID: threadID)
         return RelayThreadSummarySnapshot(
             id: threadID,
             cwd: string("cwd", in: thread) ?? fallbackCWD,
             updatedAtUnixTime: updatedAt == 0 ? Date().timeIntervalSince1970 : updatedAt,
-            preview: string("preview", in: thread)
-                ?? string("name", in: thread)
-                ?? string("title", in: thread)
-                ?? "新会话",
+            preview: preview,
             gitRepository: git.flatMap { string("repository", in: $0) ?? string("repo", in: $0) ?? string("originUrl", in: $0) },
             gitBranch: git.flatMap { string("branch", in: $0) },
             status: status(from: thread["status"] ?? thread["state"])
@@ -292,6 +382,16 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
 
     private static func string(_ key: String, in object: [String: Any]) -> String? {
         object[key] as? String
+    }
+
+    private static func startedThreadPreview(in object: [String: Any], threadID: String) -> String {
+        let preview = string("preview", in: object)
+            ?? string("name", in: object)
+            ?? string("title", in: object)
+        guard let preview, !preview.isEmpty, preview != threadID else {
+            return "新会话"
+        }
+        return preview
     }
 
     private static func unixTime(from value: Any?) -> TimeInterval {
@@ -672,6 +772,12 @@ public struct HostAgentCodexAppServerThreadListProvider: HostAgentThreadListProv
         default:
             return .completed
         }
+    }
+}
+
+private extension ControlJSONValue {
+    var foundationValueDictionary: [String: Any] {
+        foundationValue as? [String: Any] ?? [:]
     }
 }
 

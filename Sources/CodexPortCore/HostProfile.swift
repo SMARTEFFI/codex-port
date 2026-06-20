@@ -79,6 +79,7 @@ public struct RelayHostDraft: Equatable, Sendable {
     public var presence: RelayHostPresence
     public var readiness: RelayHostReadiness
     public var diagnosticsSummary: String
+    public var connectionPathState: RemoteConnectionPathState?
 
     public init(
         hostAgentID: UUID,
@@ -89,7 +90,8 @@ public struct RelayHostDraft: Equatable, Sendable {
         relayEndpointURL: URL? = nil,
         presence: RelayHostPresence,
         readiness: RelayHostReadiness? = nil,
-        diagnosticsSummary: String
+        diagnosticsSummary: String,
+        connectionPathState: RemoteConnectionPathState? = nil
     ) {
         self.hostAgentID = hostAgentID
         self.displayName = displayName
@@ -100,6 +102,7 @@ public struct RelayHostDraft: Equatable, Sendable {
         self.presence = presence
         self.readiness = readiness ?? RelayHostReadiness.default(for: presence)
         self.diagnosticsSummary = diagnosticsSummary
+        self.connectionPathState = connectionPathState
     }
 }
 
@@ -131,6 +134,7 @@ public struct RelayHost: Equatable, Sendable {
     public var presence: RelayHostPresence
     public var readiness: RelayHostReadiness
     public var diagnosticsSummary: String
+    public var connectionPathState: RemoteConnectionPathState?
 
     public init(
         hostAgentID: UUID,
@@ -141,7 +145,8 @@ public struct RelayHost: Equatable, Sendable {
         relayEndpointURL: URL? = nil,
         presence: RelayHostPresence,
         readiness: RelayHostReadiness? = nil,
-        diagnosticsSummary: String
+        diagnosticsSummary: String,
+        connectionPathState: RemoteConnectionPathState? = nil
     ) {
         self.hostAgentID = hostAgentID
         self.displayName = displayName
@@ -152,6 +157,7 @@ public struct RelayHost: Equatable, Sendable {
         self.presence = presence
         self.readiness = readiness ?? RelayHostReadiness.default(for: presence)
         self.diagnosticsSummary = diagnosticsSummary
+        self.connectionPathState = connectionPathState
     }
 }
 
@@ -166,7 +172,7 @@ public enum RelayHostReadiness: Equatable, Sendable {
         case let .offline(lastSeenAt):
             return .offline(lastSeenAt: lastSeenAt)
         case .online:
-            return .loading(stage: .threadList)
+            return .ready(loadedThreadCount: 0)
         }
     }
 }
@@ -379,7 +385,8 @@ extension RelayHost {
             relayEndpointURL: draft.relayEndpointURL,
             presence: draft.presence,
             readiness: draft.readiness,
-            diagnosticsSummary: draft.diagnosticsSummary
+            diagnosticsSummary: draft.diagnosticsSummary,
+            connectionPathState: draft.connectionPathState
         )
     }
 }

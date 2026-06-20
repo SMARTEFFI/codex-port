@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+. "$ROOT_DIR/scripts/lib/host-name.sh"
+
 HOST_ID="${CODEXPORT_RELAY_HOST_ID:-11111111-2222-3333-4444-555555555555}"
-HOST_NAME="${CODEXPORT_RELAY_HOST_NAME:-CodexPort Dev Mac}"
+HOST_NAME="${CODEXPORT_RELAY_HOST_NAME:-$(codexport_default_host_name)}"
 HOST_USER="${CODEXPORT_RELAY_HOST_USER:-${USER:-macos}}"
 RELAY_BASE_URL="${CODEXPORT_RELAY_BASE_URL:-https://codexport.smarteffi.net}"
 CODEX_CONTROL_SOCKET_PATH="${CODEXPORT_CODEX_CONTROL_SOCKET_PATH:-$HOME/.codex/app-server-control/app-server-control.sock}"
@@ -27,6 +29,24 @@ mkdir -p "$(dirname "$LAUNCHD_PLIST")"
 
 xml_escape() {
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+webrtc_optional_env_xml() {
+  local optional_names=(
+    CODEXPORT_WEBRTC_ICE_SERVERS_JSON
+    CODEXPORT_WEBRTC_STUN_URLS
+    CODEXPORT_WEBRTC_TURN_URLS
+    CODEXPORT_WEBRTC_TURN_USERNAME
+    CODEXPORT_WEBRTC_TURN_CREDENTIAL
+    CODEXPORT_WEBRTC_DATA_CHANNEL_LABEL
+  )
+  local name value
+  for name in "${optional_names[@]}"; do
+    value="${!name:-}"
+    if [[ -n "$value" ]]; then
+      printf '    <string>%s=%s</string>\n' "$(xml_escape "$name")" "$(xml_escape "$value")"
+    fi
+  done
 }
 
 echo "Building HostAgent menu app..." >&2
@@ -68,6 +88,7 @@ cat > "$LAUNCHD_PLIST" <<EOF
     <string>CODEXPORT_HOST_AGENT_BACKEND=$(xml_escape "${CODEXPORT_HOST_AGENT_BACKEND:-codex-cli-live}")</string>
     <string>CODEXPORT_WEBRTC_SIDECAR_PATH=$(xml_escape "$WEBRTC_SIDECAR_PATH")</string>
     <string>CODEXPORT_WEBRTC_SIDECAR_ARGUMENTS_JSON=$(xml_escape "$WEBRTC_SIDECAR_ARGUMENTS_JSON")</string>
+$(webrtc_optional_env_xml)
     <string>$(xml_escape "$MENU_EXECUTABLE")</string>
   </array>
   <key>WorkingDirectory</key>

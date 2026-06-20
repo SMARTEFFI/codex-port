@@ -556,7 +556,7 @@ Use this checklist when two physical iPhones are online.
 
    CODEXPORT_RELAY_BASE_URL=https://codexport.smarteffi.net \
    CODEXPORT_RELAY_HOST_ID=11111111-2222-3333-4444-555555555555 \
-   CODEXPORT_RELAY_HOST_NAME="CodexPort Dev Mac" \
+   CODEXPORT_RELAY_HOST_NAME="$(scutil --get LocalHostName 2>/dev/null || hostname -s)" \
    CODEXPORT_RELAY_HOST_USER="$USER" \
    CODEXPORT_CODEX_CONTROL_SOCKET_PATH="$HOME/.codex/app-server-control/app-server-control.sock" \
    CODEXPORT_WEBRTC_SIDECAR_PATH="$CODEXPORT_WEBRTC_SIDECAR_PATH" \

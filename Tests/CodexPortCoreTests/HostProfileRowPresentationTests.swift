@@ -97,6 +97,36 @@ import Testing
     ))
 }
 
+@Test func relayHostRowPresentationTreatsFreshOnlinePairingAsOpenable() {
+    let profile = HostProfile(
+        id: UUID(),
+        connectionMethod: .relay(
+            RelayHost(
+                hostAgentID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                displayName: "Mac Studio",
+                userName: "chenm",
+                pairingRecordID: "pairing-record",
+                presence: .online(activeConnectionCount: 1),
+                diagnosticsSummary: "Host Agent online"
+            )
+        ),
+        name: "Mac Studio Relay",
+        host: "relay://11111111-2222-3333-4444-555555555555",
+        port: 443,
+        username: "chenm",
+        auth: .none,
+        codexPath: "codex",
+        startupCommand: "",
+        defaultDirectory: "~/Projects",
+        knownHostFingerprint: nil
+    )
+
+    let presentation = HostProfileRowPresentation(profile: profile)
+    #expect(presentation.statusText == "在线")
+    #expect(presentation.statusKind == .online)
+    #expect(presentation.canOpenWorkspaces)
+}
+
 @Test func relayHostRowPresentationShowsActionableFailureWithoutConnectionLogSheet() {
     let profile = HostProfile(
         id: UUID(),
@@ -125,6 +155,44 @@ import Testing
     #expect(HostProfileRowPresentation(profile: profile).statusText == "读取会话列表超时")
     #expect(HostProfileRowPresentation(profile: profile).statusKind == .failed)
     #expect(HostProfileRowPresentation(profile: profile).canOpenWorkspaces)
+}
+
+@Test func relayHostRowPresentationShowsRemoteConnectionPathSummaryWhenAvailable() {
+    var path = RemoteConnectionPathState.fromPresence(
+        .online(activeConnectionCount: 1),
+        authorization: .authorizedToSignal(pairingRecordID: "pairing-record")
+    )
+    path.apply(.iceGathering)
+    path.apply(.turnRelayedConnected)
+    path.apply(.dataChannelOpen)
+    path.markDirectProbeActive(reason: "relay fallback")
+    let profile = HostProfile(
+        id: UUID(),
+        connectionMethod: .relay(
+            RelayHost(
+                hostAgentID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                displayName: "Mac Studio",
+                userName: "chenm",
+                pairingRecordID: "pairing-record",
+                presence: .online(activeConnectionCount: 1),
+                readiness: .ready(loadedThreadCount: 3),
+                diagnosticsSummary: "Host Agent ready",
+                connectionPathState: path
+            )
+        ),
+        name: "Mac Studio Relay",
+        host: "relay://11111111-2222-3333-4444-555555555555",
+        port: 443,
+        username: "chenm",
+        auth: .none,
+        codexPath: "codex",
+        startupCommand: "",
+        defaultDirectory: "~/Projects",
+        knownHostFingerprint: nil
+    )
+
+    #expect(HostProfileRowPresentation(profile: profile).statusText == "中转 · 尝试直连中")
+    #expect(HostProfileRowPresentation(profile: profile).statusKind == .online)
 }
 
 @Test func directSSHRowPresentationKeepsExistingTrustStatus() {

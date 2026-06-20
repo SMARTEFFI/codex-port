@@ -8,7 +8,7 @@ import Testing
     {"type":"listThreads","clientID":"iphone-a","requestID":"request-1","limit":25}
     """
     let attachLine = """
-    {"type":"attach","clientID":"iphone-a","sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","cwd":"/Users/chenm/Projects/codex-port"}
+    {"type":"attach","clientID":"iphone-a","sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","cwd":"/Users/chenm/Projects/codex-port","loadInitialHistory":false,"resumeLiveSession":false}
     """
     let promptLine = """
     {"type":"prompt","clientID":"iphone-a","sessionID":"session-1","threadID":"thread-1","writeID":"write-1","text":"hello"}
@@ -37,7 +37,9 @@ import Testing
             sessionID: "session-1",
             threadID: "thread-1",
             turnID: "turn-1",
-            cwd: "/Users/chenm/Projects/codex-port"
+            cwd: "/Users/chenm/Projects/codex-port",
+            loadInitialHistory: false,
+            resumeLiveSession: false
         )
     ))
     #expect(try HostAgentLocalRelayJSONLCodec.decodeCommand(from: promptLine) == .submit(
@@ -52,4 +54,17 @@ import Testing
         limit: 10,
         cursor: "older-cursor-1"
     ))
+}
+
+@Test func hostAgentLocalRelayJSONLCodecOnlyIncludesErrorReasonWhenExplicitlyAllowed() throws {
+    let redacted = try HostAgentLocalRelayJSONLCodec.encodeError("secret failure", clientID: "iphone-a")
+    let visible = try HostAgentLocalRelayJSONLCodec.encodeError(
+        "thread/resume timed out while loading initial history",
+        clientID: "iphone-a",
+        includeReason: true
+    )
+
+    #expect(redacted.contains(#""reasonBytes":"#))
+    #expect(!redacted.contains(#""reason":"#))
+    #expect(visible.contains(#""reason":"thread\/resume timed out while loading initial history""#))
 }

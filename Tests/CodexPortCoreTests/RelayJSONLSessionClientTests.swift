@@ -20,7 +20,7 @@ import Testing
     try await client.sendPrompt("hello relay", writeID: "write-1")
 
     #expect(await transport.sentLinesSnapshot() == [
-        #"{"clientID":"iphone-a","sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
         #"{"clientID":"iphone-a","sessionID":"session-1","text":"hello relay","threadID":"thread-1","type":"prompt","writeID":"write-1"}"#,
     ])
     #expect(store.visibleItems == [.userMessage("hello relay")])
@@ -63,6 +63,30 @@ import Testing
     #expect(attach["threadID"] as? String == "thread-1")
     #expect(attach["turnID"] as? String == "turn-1")
     #expect(attach["cwd"] as? String == "/Users/chenm/Projects/codex-port")
+    #expect(attach["loadInitialHistory"] as? Bool == true)
+}
+
+@Test func relayJSONLSessionClientCanAttachWithoutInitialHistory() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let client = RelayJSONLSessionClient(
+        clientID: "iphone-a",
+        sessionID: "new-thread",
+        threadID: "new-thread",
+        turnID: "new-thread-turn",
+        loadInitialHistoryOnAttach: false,
+        resumeLiveSessionOnAttach: false,
+        transport: transport,
+        sessionStore: store
+    )
+
+    try await client.attach()
+
+    let attach = try #require(await transport.firstSentJSONObject())
+    #expect(attach["type"] as? String == "attach")
+    #expect(attach["loadInitialHistory"] as? Bool == false)
+    #expect(attach["resumeLiveSession"] as? Bool == false)
+    #expect(store.visibleItems.isEmpty)
 }
 
 @Test func relayJSONLSessionClientStartsThreadAndParsesThreadStartedResponse() async throws {
@@ -175,7 +199,7 @@ import Testing
 
     #expect((capturedError as? POSIXError)?.code == .ECONNABORTED)
     #expect(await transport.sentLinesSnapshot() == [
-        #"{"clientID":"iphone-a","sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
     ])
     #expect(store.visibleItems.isEmpty)
 }
@@ -480,13 +504,160 @@ import Testing
 
     #expect(factory.clientCount == 2)
     #expect(await firstTransport.sentLinesSnapshot() == [
-        #"{"clientID":"iphone-a","sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
     ])
     #expect(await secondTransport.sentLinesSnapshot() == [
-        #"{"clientID":"iphone-a","sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
         #"{"clientID":"iphone-a","sessionID":"session-1","text":"hello recreated client","threadID":"thread-1","type":"prompt","writeID":"write-retry"}"#,
     ])
     #expect(store.visibleItems == [.userMessage("hello recreated client")])
+}
+
+@Test func relayJSONLSessionClientManagerRecreatesClientAfterWebRTCDataChannelCloses() async throws {
+    let firstTransport = RecordingRelayJSONLTransport()
+    let secondTransport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let factory = RelaySessionClientFactoryHarness(transports: [firstTransport, secondTransport])
+    let manager = RelayJSONLSessionClientManager(sessionStore: store) { sessionStore in
+        factory.makeClient(sessionStore: sessionStore)
+    }
+
+    _ = try await manager.attach()
+    await firstTransport.failNextSendWith(WebRTCDataChannelTransportError.dataChannelClosed)
+    try await manager.sendPrompt("hello after network switch", writeID: "write-network-switch")
+
+    #expect(factory.clientCount == 2)
+    #expect(await secondTransport.sentLinesSnapshot() == [
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
+        #"{"clientID":"iphone-a","sessionID":"session-1","text":"hello after network switch","threadID":"thread-1","type":"prompt","writeID":"write-network-switch"}"#,
+    ])
+    #expect(store.visibleItems == [.userMessage("hello after network switch")])
+}
+
+@Test func relayJSONLSessionClientManagerReattachesWhenTransportCloses() async throws {
+    let firstTransport = RecordingRelayJSONLTransport()
+    let secondTransport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let factory = RelaySessionClientFactoryHarness(transports: [firstTransport, secondTransport])
+    let manager = RelayJSONLSessionClientManager(sessionStore: store) { sessionStore in
+        factory.makeClient(sessionStore: sessionStore)
+    }
+
+    _ = try await manager.attach()
+    firstTransport.finishIncoming()
+    await waitUntil {
+        factory.clientCount == 2
+    }
+
+    #expect(manager.client !== nil)
+    #expect(await secondTransport.sentLinesSnapshot() == [
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
+    ])
+}
+
+@Test func relayJSONLSessionClientManagerWaitsUntilInitialHistoryPopulatesStore() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let manager = RelayJSONLSessionClientManager(sessionStore: store) { sessionStore in
+        RelayJSONLSessionClient(
+            clientID: "iphone-a",
+            sessionID: "thread-1",
+            threadID: "thread-1",
+            turnID: "thread-1-turn",
+            transport: transport,
+            sessionStore: sessionStore
+        )
+    }
+
+    async let attachResult = manager.attach(
+        waitForInitialHistory: true,
+        timeout: .milliseconds(300)
+    )
+    await waitUntil {
+        (try? transport.sentLinesSyncSnapshot().contains { $0.contains(#""type":"attach""#) }) == true
+    }
+    try transport.emit(RelayEndpointJSONLCodec.encodeThreadHistoryPage(
+        RelayThreadHistoryPage(
+            requestID: "initial",
+            threadID: "thread-1",
+            items: [
+                .userMessage("桌面端已有问题"),
+                .assistantMessage("桌面端已有回答"),
+            ],
+            status: .completed,
+            nextCursor: nil
+        ),
+        clientID: "iphone-a"
+    ))
+
+    _ = try await attachResult
+    #expect(store.visibleItems == [
+        .userMessage("桌面端已有问题"),
+        .assistantMessage("桌面端已有回答"),
+    ])
+    #expect(store.status == .completed)
+}
+
+@Test func relayJSONLSessionClientManagerForwardsForegroundRecoveryToCurrentTransport() async throws {
+    let transport = RecordingRecoveringRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let manager = RelayJSONLSessionClientManager(sessionStore: store) { sessionStore in
+        RelayJSONLSessionClient(
+            clientID: "iphone-a",
+            sessionID: "session-1",
+            threadID: "thread-1",
+            turnID: "turn-1",
+            transport: transport,
+            sessionStore: sessionStore
+        )
+    }
+
+    _ = try await manager.attach()
+    try await manager.recoverAfterForeground()
+
+    #expect(await transport.foregroundRecoveryCount == 1)
+    #expect(await transport.sentLinesSnapshot() == [
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"session-1","threadID":"thread-1","turnID":"turn-1","type":"attach"}"#,
+    ])
+}
+
+@Test func relayJSONLSessionClientManagerStartsThreadDetachedWithoutAttachingAnchorSession() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let factory = RelaySessionClientFactoryHarness(transports: [transport])
+    let manager = RelayJSONLSessionClientManager(sessionStore: store) { sessionStore in
+        factory.makeClient(sessionStore: sessionStore)
+    }
+    let startedThread = RelayThreadSummarySnapshot(
+        id: "new-thread",
+        cwd: "/repo/app",
+        updatedAtUnixTime: 1_800_000_000,
+        preview: "新会话",
+        gitRepository: nil,
+        gitBranch: nil,
+        status: "completed"
+    )
+
+    async let result = manager.startThreadDetached(
+        cwd: "/repo/app",
+        requestID: "start-new",
+        timeout: .milliseconds(300)
+    )
+    await waitUntil {
+        (try? transport.sentLinesSyncSnapshot().contains { $0.contains(#""type":"startThread""#) }) == true
+    }
+    try transport.emit(RelayEndpointJSONLCodec.encodeThreadStarted(
+        startedThread,
+        clientID: "iphone-a",
+        requestID: "start-new"
+    ))
+
+    #expect(try await result == startedThread)
+    #expect(await transport.sentLinesSnapshot() == [
+        #"{"clientID":"iphone-a","cwd":"\/repo\/app","requestID":"start-new","type":"startThread"}"#
+    ])
+    #expect(manager.client == nil)
+    #expect(store.visibleItems.isEmpty)
 }
 
 @Test func relayJSONLSessionClientIgnoresEventsForOtherClients() async throws {
@@ -630,6 +801,75 @@ import Testing
     }
 
     #expect(store.status == .completed)
+}
+
+@Test func relayJSONLSessionClientCanWaitForInitialHistoryOnAttach() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let client = RelayJSONLSessionClient(
+        clientID: "iphone-a",
+        sessionID: "thread-1",
+        threadID: "thread-1",
+        turnID: "thread-1-turn",
+        transport: transport,
+        sessionStore: store
+    )
+
+    async let attachResult: Void = client.attach(
+        waitForInitialHistory: true,
+        timeout: .milliseconds(300)
+    )
+    await waitUntil {
+        (try? transport.sentLinesSyncSnapshot().first?.contains(#""type":"attach""#)) == true
+    }
+    try transport.emit(RelayEndpointJSONLCodec.encodeThreadHistoryPage(
+        RelayThreadHistoryPage(
+            requestID: "initial",
+            threadID: "thread-1",
+            items: [
+                .userMessage("桌面端已有问题"),
+                .assistantMessage("桌面端已有回答"),
+            ],
+            status: .completed,
+            nextCursor: nil
+        ),
+        clientID: "iphone-a"
+    ))
+
+    _ = try await attachResult
+    #expect(store.visibleItems == [
+        .userMessage("桌面端已有问题"),
+        .assistantMessage("桌面端已有回答"),
+    ])
+}
+
+@Test func relayJSONLSessionClientTimesOutWaitingForInitialHistoryOnAttach() async throws {
+    let transport = RecordingRelayJSONLTransport()
+    let store = SessionStore(protocolClient: FakeCodexProtocol())
+    let client = RelayJSONLSessionClient(
+        clientID: "iphone-a",
+        sessionID: "thread-1",
+        threadID: "thread-1",
+        turnID: "thread-1-turn",
+        transport: transport,
+        sessionStore: store
+    )
+
+    let capturedError: Error?
+    do {
+        try await client.attach(
+            waitForInitialHistory: true,
+            timeout: .milliseconds(30)
+        )
+        capturedError = nil
+    } catch {
+        capturedError = error
+    }
+
+    #expect(capturedError as? RelayJSONLSessionClientError == .initialHistoryTimedOut)
+    #expect(await transport.sentLinesSnapshot() == [
+        #"{"clientID":"iphone-a","loadInitialHistory":true,"resumeLiveSession":true,"sessionID":"thread-1","threadID":"thread-1","turnID":"thread-1-turn","type":"attach"}"#,
+    ])
 }
 
 @Test func relayJSONLSessionClientRequestsEarlierHistoryPageAndPrependsItWithoutDroppingLiveItems() async throws {
@@ -901,6 +1141,12 @@ private final class RecordingRelayJSONLTransport: RelayJSONLTransport, @unchecke
         }?.yield(line)
     }
 
+    func finishIncoming() {
+        lock.withLock {
+            continuation
+        }?.finish()
+    }
+
     func sentLinesSnapshot() async -> [String] {
         lock.withLock {
             sentLines
@@ -937,6 +1183,58 @@ private final class RecordingRelayJSONLTransport: RelayJSONLTransport, @unchecke
             return nil
         }
         return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+}
+
+private actor RecordingRecoveryCounter {
+    private(set) var foreground = 0
+    private(set) var network = 0
+    private(set) var directProbe = 0
+
+    func recordForeground() {
+        foreground += 1
+    }
+
+    func recordNetwork() {
+        network += 1
+    }
+
+    func recordDirectProbe() {
+        directProbe += 1
+    }
+}
+
+private final class RecordingRecoveringRelayJSONLTransport:
+    RelayJSONLTransport,
+    RelayJSONLTransportRecovering,
+    @unchecked Sendable
+{
+    private let base = RecordingRelayJSONLTransport()
+    private let recoveryCounter = RecordingRecoveryCounter()
+    var incomingLines: AsyncStream<String> { base.incomingLines }
+
+    var foregroundRecoveryCount: Int {
+        get async { await recoveryCounter.foreground }
+    }
+
+    func sendLine(_ line: String) async throws {
+        try await base.sendLine(line)
+    }
+
+    func recoverAfterForeground() async throws {
+        await recoveryCounter.recordForeground()
+    }
+
+    func recoverAfterNetworkChange() async throws {
+        await recoveryCounter.recordNetwork()
+    }
+
+    func retryDirectProbeNow() async {
+        await recoveryCounter.recordDirectProbe()
+    }
+
+    func sentLinesSnapshot() async -> [String] {
+        await base.sentLinesSnapshot()
     }
 }
 

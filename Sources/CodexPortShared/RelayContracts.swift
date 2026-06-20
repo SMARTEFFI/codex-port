@@ -463,6 +463,39 @@ public struct RelayP2POpenSessionResponse: Codable, Equatable, Sendable {
     }
 }
 
+public struct RelayP2PICEConfigurationRequest: Codable, Equatable, Sendable {
+    public var hostID: UUID
+    public var deviceID: UUID
+    public var pairingRecordID: String
+    public var supportedVersions: [RelayProtocolVersion]
+
+    public init(
+        hostID: UUID,
+        deviceID: UUID,
+        pairingRecordID: String,
+        supportedVersions: [RelayProtocolVersion]
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.pairingRecordID = pairingRecordID
+        self.supportedVersions = supportedVersions
+    }
+}
+
+public struct RelayP2PICEConfigurationResponse: Codable, Equatable, Sendable, CustomStringConvertible {
+    public var configuration: WebRTCRuntimeConfiguration
+    public var expiresAtUnixTime: TimeInterval
+
+    public init(configuration: WebRTCRuntimeConfiguration, expiresAtUnixTime: TimeInterval) {
+        self.configuration = configuration
+        self.expiresAtUnixTime = expiresAtUnixTime
+    }
+
+    public var description: String {
+        "RelayP2PICEConfigurationResponse(configuration: \(configuration), expiresAtUnixTime: \(expiresAtUnixTime))"
+    }
+}
+
 public enum RelayP2PSignalingEndpointRole: String, Codable, Equatable, Sendable {
     case host
     case device

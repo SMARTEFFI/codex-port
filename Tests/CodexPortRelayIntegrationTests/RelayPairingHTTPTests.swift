@@ -88,6 +88,60 @@ import Testing
     ])
 }
 
+@Test func relayGatewayRestoresPairingRecordsForP2PSignalingAfterRestart() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "codexport-relay-state-\(UUID().uuidString)")
+    let stateStore = FileRelayAuthenticatedStreamGatewayStateStore(directoryPath: directory.path)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let now = Date(timeIntervalSince1970: 100)
+    let host = RelayHostIdentity(
+        id: hostID,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        publicKey: EndpointPublicKey(rawValue: Data("host-public-key".utf8))
+    )
+    let device = DeviceIdentity(
+        id: deviceID,
+        displayName: "iPhone A",
+        kind: .iOSClient,
+        publicKey: EndpointPublicKey(rawValue: Data("iphone-public-key".utf8))
+    )
+    let firstGateway = RelayAuthenticatedStreamGateway(
+        supportedVersions: [.v0_2_0],
+        now: { now },
+        initialState: try stateStore.load(),
+        stateStore: stateStore
+    )
+    _ = await firstGateway.registerHost(host)
+    let pairing = try await firstGateway.authorize(device: device, forHostID: hostID, pairedAt: now)
+
+    let restoredGateway = RelayAuthenticatedStreamGateway(
+        supportedVersions: [.v0_2_0],
+        now: { Date(timeIntervalSince1970: 200) },
+        initialState: try stateStore.load(),
+        stateStore: stateStore
+    )
+    #expect(await restoredGateway.pairingRecords(forHostID: hostID).map(\.pairingRecordID) == [pairing.id])
+    #expect(await restoredGateway.p2pPresence(hostID: hostID, deviceID: deviceID).authorization == .hostOffline)
+
+    _ = await restoredGateway.registerHost(host)
+    let presence = await restoredGateway.p2pPresence(hostID: hostID, deviceID: deviceID)
+    let session = try await restoredGateway.openP2PSession(RelayP2POpenSessionRequest(
+        hostID: hostID,
+        deviceID: deviceID,
+        pairingRecordID: pairing.id,
+        supportedVersions: [.v0_2_0]
+    ))
+
+    #expect(presence.authorization == .authorizedToSignal)
+    #expect(presence.pairingRecordID == pairing.id)
+    #expect(session.pairingRecordID == pairing.id)
+}
+
 @Test func relayPublicServiceExposesPairingPublishAndConsumeHTTPEndpoints() async throws {
     let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
     let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
@@ -415,6 +469,17 @@ import Testing
             ]),
         decode: RelayP2PDrainMessagesResponse.self
     )
+    let noStoreDrain = try await getData(
+        from: baseURL
+            .appending(path: "v0")
+            .appending(path: "p2p")
+            .appending(path: "sessions")
+            .appending(path: open.body.sessionID.uuidString)
+            .appending(path: "messages")
+            .appending(queryItems: [
+                URLQueryItem(name: "endpoint", value: "device"),
+            ])
+    )
     let hostWideDrainAfterSessionDrain = try await getJSON(
         from: baseURL
             .appending(path: "v0")
@@ -436,6 +501,10 @@ import Testing
     #expect(send.status == 200)
     #expect(hostDrain.status == 200)
     #expect(hostDrain.body.messages == [offer])
+    #expect(noStoreDrain.status == 200)
+    #expect((noStoreDrain.headers["Cache-Control"] as? String) == "no-store")
+    #expect((noStoreDrain.headers["Pragma"] as? String) == "no-cache")
+    #expect((noStoreDrain.headers["Expires"] as? String) == "0")
     #expect(hostWideDrainAfterSessionDrain.status == 200)
     #expect(hostWideDrainAfterSessionDrain.body.messages.isEmpty)
 
@@ -680,6 +749,103 @@ import Testing
     await relay.stop()
 }
 
+@Test func relayPublicServiceIssuesP2PICEConfigurationOnlyForAuthorizedPairing() async throws {
+    let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let deviceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let gateway = RelayAuthenticatedStreamGateway(
+        supportedVersions: [.v0_2_0],
+        now: { Date(timeIntervalSince1970: 1_000) },
+        iceConfigurationProvider: StaticRelayP2PICEConfigurationProvider(
+            configuration: WebRTCRuntimeConfiguration(iceServers: [
+                WebRTCICEServerConfiguration(urls: ["stun:relay.example.test:3478"]),
+                WebRTCICEServerConfiguration(
+                    urls: ["turn:relay.example.test:3478?transport=udp"],
+                    username: "1600:pairing-record",
+                    credential: "short-lived-turn-secret"
+                ),
+            ]),
+            ttl: .seconds(600)
+        )
+    )
+    _ = await gateway.registerHost(RelayHostIdentity(
+        id: hostID,
+        displayName: "Mac Studio",
+        userName: "chenm",
+        publicKey: EndpointPublicKey(rawValue: Data("host-public-key".utf8))
+    ))
+    let relay = RelayPublicWebSocketService(host: "127.0.0.1", port: 0, gateway: gateway)
+    let endpoints = try await relay.start()
+    let baseURL = URL(string: "http://\(endpoints.streamEndpointURL.host!):\(endpoints.streamEndpointURL.port!)")!
+
+    _ = try await postJSON(
+        RelayPairingPublishRequest(
+            tokenID: "pairing-token-ice",
+            hostID: hostID,
+            expiresAtUnixTime: 2_000,
+            manualCode: "444-555",
+            hostDisplayName: "Mac Studio",
+            hostUserName: "chenm",
+            hostPublicKeyBase64: Data("host-public-key".utf8).base64EncodedString()
+        ),
+        to: baseURL.appending(path: "v0").appending(path: "pairing").appending(path: "publish")
+    )
+    let consume = try await postJSON(
+        RelayPairingConsumeRequest(
+            tokenID: "444-555",
+            deviceID: deviceID,
+            deviceDisplayName: "iPhone A",
+            devicePublicKeyBase64: Data("iphone-public-key".utf8).base64EncodedString(),
+            supportedVersions: [.v0_2_0]
+        ),
+        to: baseURL.appending(path: "v0").appending(path: "pairing").appending(path: "consume"),
+        decode: RelayPairingConsumeResponse.self
+    )
+
+    let ice = try await postJSON(
+        RelayP2PICEConfigurationRequest(
+            hostID: hostID,
+            deviceID: deviceID,
+            pairingRecordID: consume.body.pairingRecordID,
+            supportedVersions: [.v0_2_0]
+        ),
+        to: baseURL
+            .appending(path: "v0")
+            .appending(path: "p2p")
+            .appending(path: "ice-config"),
+        decode: RelayP2PICEConfigurationResponse.self
+    )
+    _ = try await postEmpty(
+        to: baseURL
+            .appending(path: "v0")
+            .appending(path: "hosts")
+            .appending(path: hostID.uuidString)
+            .appending(path: "pairings")
+            .appending(path: consume.body.pairingRecordID)
+            .appending(path: "revoke")
+    )
+    let revoked = try await postJSON(
+        RelayP2PICEConfigurationRequest(
+            hostID: hostID,
+            deviceID: deviceID,
+            pairingRecordID: consume.body.pairingRecordID,
+            supportedVersions: [.v0_2_0]
+        ),
+        to: baseURL
+            .appending(path: "v0")
+            .appending(path: "p2p")
+            .appending(path: "ice-config")
+    )
+
+    #expect(ice.status == 200)
+    #expect(ice.body.expiresAtUnixTime == 1_600)
+    #expect(ice.body.configuration.iceServers[1].username == "1600:pairing-record")
+    #expect(ice.body.configuration.iceServers[1].credential == "short-lived-turn-secret")
+    #expect(!String(describing: ice.body).contains("short-lived-turn-secret"))
+    #expect(revoked.status == 403)
+
+    await relay.stop()
+}
+
 private func postJSON<T: Encodable>(_ value: T, to url: URL) async throws -> (status: Int, data: Data) {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
@@ -709,10 +875,16 @@ private func getJSON<U: Decodable>(
     from url: URL,
     decode type: U.Type
 ) async throws -> (status: Int, body: U) {
+    let response = try await getData(from: url)
+    return (response.status, try JSONDecoder().decode(U.self, from: response.data))
+}
+
+private func getData(from url: URL) async throws -> (status: Int, data: Data, headers: [AnyHashable: Any]) {
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
     let (data, response) = try await URLSession.shared.data(for: request)
-    return ((response as? HTTPURLResponse)?.statusCode ?? 0, try JSONDecoder().decode(U.self, from: data))
+    let httpResponse = response as? HTTPURLResponse
+    return (httpResponse?.statusCode ?? 0, data, httpResponse?.allHeaderFields ?? [:])
 }
 
 private func getStatus(from url: URL) async throws -> Int {

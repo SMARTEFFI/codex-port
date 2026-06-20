@@ -121,7 +121,7 @@ public struct HostAgentCommandLineConfiguration: Sendable {
         }
         let host = RelayHostIdentity(
             id: try uuid("CODEXPORT_RELAY_HOST_ID", environment: environment),
-            displayName: try string("CODEXPORT_RELAY_HOST_NAME", environment: environment),
+            displayName: try hostDisplayName("CODEXPORT_RELAY_HOST_NAME", environment: environment),
             userName: try string("CODEXPORT_RELAY_HOST_USER", environment: environment),
             publicKey: EndpointPublicKey(rawValue: Data("host-agent-public-key".utf8))
         )
@@ -206,7 +206,7 @@ public struct HostAgentCommandLineConfiguration: Sendable {
         let hostID = try uuid("CODEXPORT_RELAY_HOST_ID", environment: environment)
         let host = RelayHostIdentity(
             id: hostID,
-            displayName: try string("CODEXPORT_RELAY_HOST_NAME", environment: environment),
+            displayName: try hostDisplayName("CODEXPORT_RELAY_HOST_NAME", environment: environment),
             userName: try string("CODEXPORT_RELAY_HOST_USER", environment: environment),
             publicKey: EndpointPublicKey(rawValue: Data("local-relay-host-public-key".utf8))
         )
@@ -258,6 +258,13 @@ public struct HostAgentCommandLineConfiguration: Sendable {
 
     private static func string(_ key: String, environment: [String: String]) throws -> String {
         guard let value = environment[key], !value.isEmpty else {
+            throw HostAgentCommandLineConfigurationError.missingRelaySeed(key)
+        }
+        return value
+    }
+
+    private static func hostDisplayName(_ key: String, environment: [String: String]) throws -> String {
+        guard let value = HostAgentHostDisplayName.nonSynthetic(environment[key]) else {
             throw HostAgentCommandLineConfigurationError.missingRelaySeed(key)
         }
         return value

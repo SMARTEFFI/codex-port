@@ -2,6 +2,16 @@ import Foundation
 import CodexPortShared
 
 public final class RelaySessionContext: @unchecked Sendable {
+    public struct AttachOptions: Sendable {
+        public var loadInitialHistory: Bool
+        public var resumeLiveSession: Bool
+
+        public init(loadInitialHistory: Bool = true, resumeLiveSession: Bool = true) {
+            self.loadInitialHistory = loadInitialHistory
+            self.resumeLiveSession = resumeLiveSession
+        }
+    }
+
     public let threadID: String
     public let sessionStore: SessionStore
     public let clientManager: RelayJSONLSessionClientManager
@@ -23,7 +33,11 @@ public final class RelaySessionContext: @unchecked Sendable {
 
 public final class RelaySessionContextRegistry: @unchecked Sendable {
     public typealias StoreFactory = @Sendable (_ threadID: String) -> SessionStore
-    public typealias ClientFactory = @Sendable (_ thread: ThreadSummary, _ sessionStore: SessionStore) -> RelayJSONLSessionClient?
+    public typealias ClientFactory = @Sendable (
+        _ thread: ThreadSummary,
+        _ sessionStore: SessionStore,
+        _ options: RelaySessionContext.AttachOptions
+    ) -> RelayJSONLSessionClient?
 
     private let storeFactory: StoreFactory
     private let clientFactory: ClientFactory
@@ -81,7 +95,10 @@ public final class RelaySessionContextRegistry: @unchecked Sendable {
         }
     }
 
-    public func context(threadID: String) -> RelaySessionContext? {
+    public func context(
+        threadID: String,
+        options: RelaySessionContext.AttachOptions = .init()
+    ) -> RelaySessionContext? {
         lock.withLock {
             guard let thread = allowedThreadsByID[threadID] else { return nil }
             if let context = contexts[threadID] {
@@ -89,7 +106,7 @@ public final class RelaySessionContextRegistry: @unchecked Sendable {
             }
             let store = storeFactory(threadID)
             let manager = RelayJSONLSessionClientManager(sessionStore: store) { [clientFactory] sessionStore in
-                clientFactory(thread, sessionStore)
+                clientFactory(thread, sessionStore, options)
             }
             let context = RelaySessionContext(
                 threadID: threadID,

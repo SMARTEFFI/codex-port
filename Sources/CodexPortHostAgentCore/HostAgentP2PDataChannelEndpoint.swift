@@ -79,6 +79,12 @@ public final class HostAgentP2PDataChannelEndpoint: @unchecked Sendable {
 
     private func handle(_ line: String) async {
         guard !lock.withLock({ isStopped }) else { return }
+        if case let .ping(nonce) = WebRTCDataChannelHealthCheck.decodeLine(line) {
+            if let pongLine = try? WebRTCDataChannelHealthCheck.pongLine(nonce: nonce) {
+                try? await send(pongLine)
+            }
+            return
+        }
         do {
             let summary = try HostAgentLocalRelayJSONLCodec.decodeCommand(from: line).diagnosticSummary(inputBytes: line.utf8.count)
             await onEvent(.commandReceived(summary))

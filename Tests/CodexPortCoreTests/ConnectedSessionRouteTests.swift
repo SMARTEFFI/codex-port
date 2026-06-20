@@ -26,12 +26,14 @@ import Testing
             storeFactory: { threadID in
                 SessionStore(protocolClient: RelaySessionPlaceholderProtocolClient(threadID: threadID))
             },
-            clientFactory: { thread, sessionStore in
+            clientFactory: { thread, sessionStore, options in
                 RelayJSONLSessionClient(
                     clientID: "iphone-a",
                     sessionID: "session-1",
                     threadID: thread.id,
                     turnID: "turn-1",
+                    loadInitialHistoryOnAttach: options.loadInitialHistory,
+                    resumeLiveSessionOnAttach: options.resumeLiveSession,
                     transport: sessionClientTransport,
                     sessionStore: sessionStore
                 )
